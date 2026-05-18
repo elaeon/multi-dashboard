@@ -584,7 +584,7 @@ const CENTRO_DATA = {centro_data_json};
 </body>
 </html>"""
 
-out = "site/index.html"
+out = "site/inah_sites.html"
 with open(out, "w", encoding="utf-8") as f:
     f.write(html)
 
