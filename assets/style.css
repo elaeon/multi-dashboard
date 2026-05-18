@@ -1,0 +1,71 @@
+/* Dark mode for dcc.Dropdown — targets both old and new react-select class names */
+.dark-dropdown .Select-control,
+.dark-dropdown .react-select__control {
+    background-color: #1E293B !important;
+    border-color: #334155 !important;
+    box-shadow: none !important;
+    min-height: 38px;
+}
+.dark-dropdown .Select-control:hover,
+.dark-dropdown .react-select__control:hover {
+    border-color: #2E86AB !important;
+}
+.dark-dropdown .Select-placeholder,
+.dark-dropdown .react-select__placeholder {
+    color: #64748B !important;
+}
+.dark-dropdown .Select-value-label,
+.dark-dropdown .react-select__single-value {
+    color: #CBD5E1 !important;
+}
+.dark-dropdown .Select-input input,
+.dark-dropdown .react-select__input input {
+    color: #CBD5E1 !important;
+}
+.dark-dropdown .Select-menu-outer,
+.dark-dropdown .react-select__menu {
+    background-color: #1E293B !important;
+    border: 1px solid #334155 !important;
+    z-index: 9999;
+}
+.dark-dropdown .Select-option,
+.dark-dropdown .react-select__option {
+    background-color: #1E293B !important;
+    color: #CBD5E1 !important;
+}
+.dark-dropdown .Select-option.is-focused,
+.dark-dropdown .react-select__option--is-focused {
+    background-color: #1a3a52 !important;
+    color: #F8FAFC !important;
+}
+.dark-dropdown .Select-option.is-selected,
+.dark-dropdown .react-select__option--is-selected {
+    background-color: #2E86AB !important;
+    color: #fff !important;
+}
+.dark-dropdown .Select-arrow-zone,
+.dark-dropdown .react-select__dropdown-indicator {
+    color: #94A3B8 !important;
+}
+.dark-dropdown .Select-clear-zone,
+.dark-dropdown .react-select__clear-indicator {
+    color: #94A3B8 !important;
+}
+.dark-dropdown .Select-clear-zone:hover,
+.dark-dropdown .react-select__clear-indicator:hover {
+    color: #E84855 !important;
+}
+.dark-dropdown .Select-arrow-zone:hover > .Select-arrow {
+    border-top-color: #2E86AB !important;
+}
+/* active filter badge shown next to the dropdown label */
+.filter-badge {
+    display: inline-block;
+    background: #2E86AB;
+    color: #fff;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    padding: 1px 7px;
+    margin-left: 8px;
+    vertical-align: middle;
+}
