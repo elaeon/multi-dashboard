@@ -18,7 +18,7 @@ import json
 import polars as pl
 import plotly.io as pio
 
-from dashboard import (
+from inah_sites import (
     df, compute_kpis, TOTAL_SITES, YEAR_MIN, YEAR_MAX, VISITOR_SHORT,
     fig_annual_trend, fig_yoy_change, fig_site_donut, fig_visitor_type_donut,
     fig_top_states, fig_foreign_ratio,
@@ -584,7 +584,7 @@ const CENTRO_DATA = {centro_data_json};
 </body>
 </html>"""
 
-out = "index.html"
+out = "site/index.html"
 with open(out, "w", encoding="utf-8") as f:
     f.write(html)
 

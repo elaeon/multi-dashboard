@@ -303,18 +303,41 @@ def fig_paid_free_ratio(d: pl.DataFrame) -> go.Figure:
         .with_columns((pl.col("paid") / pl.col("total") * 100).round(1).alias("pct_paid"))
         .sort("year")
     )
+    y_max = min(100, paid["pct_paid"].max() * 1.1) if not paid.is_empty() else 100
+    years = paid["year"].to_list()
     fig = go.Figure(go.Scatter(
-        x=paid["year"].to_list(), y=paid["pct_paid"].to_list(),
+        x=years, y=paid["pct_paid"].to_list(),
         mode="lines+markers",
         line=dict(color="#F4A261", width=2),
         fill="tozeroy", fillcolor="rgba(244,162,97,0.15)",
         hovertemplate="Año: %{x}<br>Pagaron: %{y:.1f}%<extra></extra>",
     ))
+    # Shade the unreliable pre-2007 region if it falls within the visible range
+    if years and years[0] < 2007:
+        shade_end = min(2006, max(years))
+        fig.add_vrect(
+            x0=years[0] - 0.5, x1=shade_end + 0.5,
+            fillcolor="rgba(148,163,184,0.08)",
+            line=dict(color="#94A3B8", width=1, dash="dot"),
+            layer="below",
+        )
+        fig.add_annotation(
+            x=(years[0] + min(shade_end, 2006)) / 2,
+            y=y_max * 0.92,
+            text="⚠ Datos incompletos<br>Solo se registró 'Boleto pagado'<br>sin desglose por tipo de visitante",
+            showarrow=False,
+            font=dict(color="#94A3B8", size=10),
+            align="center",
+            bgcolor="rgba(15,23,42,0.75)",
+            bordercolor="#94A3B8",
+            borderwidth=1,
+            borderpad=5,
+        )
     fig.update_layout(
         title="% de visitantes que pagaron boleto",
         height=360,
         xaxis=dict(gridcolor="#334155", title="Año"),
-        yaxis=dict(gridcolor="#334155", title="% pagó boleto", range=[0, 80]),
+        yaxis=dict(gridcolor="#334155", title="% pagó boleto", range=[0, y_max]),
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis")},
     )
     return fig
