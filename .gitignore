@@ -6,3 +6,5 @@ data/*.csv
 data/*.xlsx
 data/*.xls
 data/*.parquet
+images/*
+
