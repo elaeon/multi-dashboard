@@ -1,4 +1,6 @@
+import json
 import polars as pl
+import plotly.express as px
 import plotly.graph_objects as go
 from dash import Dash, dcc, html, Input, Output
 import dash_bootstrap_components as dbc
@@ -15,19 +17,27 @@ df = _RAW.with_columns(
     pl.col("FECHA_DESAPARICION").str.slice(0, 4).cast(pl.Int32, strict=False).alias("anio_desap"),
     pl.col("FECHA_DESAPARICION").str.slice(5, 2).cast(pl.Int32, strict=False).alias("mes_desap"),
     pl.col("FECHA_NACIMIENTO").str.slice(0, 4).cast(pl.Int32, strict=False).alias("anio_nac"),
+    pl.when(pl.col("SEXO") == "HOMBRE").then(pl.lit("Hombre"))
+    .when(pl.col("SEXO") == "MUJER").then(pl.lit("Mujer"))
+    .otherwise(pl.lit("Desconocido")).alias("sexo_cat"),
 )
 
-# Filter to plausible year range
 df = df.with_columns(
     pl.when(pl.col("anio_desap").is_between(1990, 2025))
     .then(pl.col("anio_desap")).otherwise(None).alias("anio_desap")
 )
 
 ESTADOS = sorted(df["ENTIDAD"].drop_nulls().unique().to_list())
+
+with open("data/mexico_states.geojson") as _f:
+    MEXICO_GEO = json.load(_f)
 MES_NOMBRES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun",
                "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 AGE_LABELS  = ["0–12", "13–17", "18–29", "30–44", "45–59", "60+"]
 AGE_RANGES  = [(0, 12), (13, 17), (18, 29), (30, 44), (45, 59), (60, 100)]
+
+SEXO_COLORS = {"Hombre": "#2E86AB", "Mujer": "#F4A261", "Desconocido": "#64748B"}
+SEXO_ORDER  = ["Hombre", "Mujer", "Desconocido"]
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
 
@@ -64,26 +74,34 @@ def kpi_card(title: str, value: str, color: str = "#CBD5E1") -> dbc.Col:
 def fig_trend(d: pl.DataFrame) -> go.Figure:
     anual = (
         d.filter(pl.col("anio_desap").is_not_null())
-        .group_by("anio_desap").agg(pl.len().alias("n"))
+        .group_by(["anio_desap", "sexo_cat"]).agg(pl.len().alias("n"))
         .sort("anio_desap")
     )
     if len(anual) == 0:
         return go.Figure()
-    years = anual["anio_desap"].to_list()
-    ns    = anual["n"].to_list()
-    fig = go.Figure(go.Bar(
-        x=years, y=ns,
-        marker_color="#E84855",
-        hovertemplate="<b>%{x}</b><br>Casos: %{y:,}<extra></extra>",
-    ))
+    years = sorted(anual["anio_desap"].unique().to_list())
+    fig = go.Figure()
+    for sexo in SEXO_ORDER:
+        subset = anual.filter(pl.col("sexo_cat") == sexo)
+        yr_n = dict(zip(subset["anio_desap"].to_list(), subset["n"].to_list()))
+        ns = [yr_n.get(y, 0) for y in years]
+        if sum(ns) == 0:
+            continue
+        fig.add_trace(go.Bar(
+            x=years, y=ns, name=sexo,
+            marker_color=SEXO_COLORS[sexo],
+            hovertemplate=f"<b>%{{x}}</b> · {sexo}<br>Casos: %{{y:,}}<extra></extra>",
+        ))
     fig.update_layout(
         title="Personas desaparecidas por año",
+        barmode="stack",
         height=380,
         xaxis=dict(gridcolor="#334155", title="Año"),
         yaxis=dict(gridcolor="#334155", title="Casos registrados"),
-        showlegend=False,
+        legend=dict(orientation="h", y=-0.18, x=0),
+        showlegend=True,
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
-        margin=dict(t=40, b=40, l=10, r=10),
+        margin=dict(t=40, b=70, l=10, r=10),
     )
     return fig
 
@@ -91,46 +109,50 @@ def fig_trend(d: pl.DataFrame) -> go.Figure:
 def fig_monthly(d: pl.DataFrame) -> go.Figure:
     monthly = (
         d.filter(pl.col("mes_desap").is_not_null() & pl.col("anio_desap").is_between(2010, 2025))
-        .group_by("mes_desap").agg(pl.len().alias("n"))
+        .group_by(["mes_desap", "sexo_cat"]).agg(pl.len().alias("n"))
         .sort("mes_desap")
     )
     if len(monthly) == 0:
         return go.Figure()
-    meses = [MES_NOMBRES[m - 1] for m in monthly["mes_desap"].to_list()]
-    ns    = monthly["n"].to_list()
-    avg   = sum(ns) / len(ns)
-    colors = ["#E84855" if n > avg else "#F4A261" for n in ns]
-    fig = go.Figure(go.Bar(
-        x=meses, y=ns,
-        marker_color=colors,
-        hovertemplate="<b>%{x}</b><br>Casos: %{y:,}<extra></extra>",
-    ))
+    meses_idx = sorted(monthly["mes_desap"].unique().to_list())
+    meses_lbl = [MES_NOMBRES[m - 1] for m in meses_idx]
+    fig = go.Figure()
+    for sexo in SEXO_ORDER:
+        subset = monthly.filter(pl.col("sexo_cat") == sexo)
+        m_n = dict(zip(subset["mes_desap"].to_list(), subset["n"].to_list()))
+        ns = [m_n.get(m, 0) for m in meses_idx]
+        if sum(ns) == 0:
+            continue
+        fig.add_trace(go.Bar(
+            x=meses_lbl, y=ns, name=sexo,
+            marker_color=SEXO_COLORS[sexo],
+            hovertemplate=f"<b>%{{x}}</b> · {sexo}<br>Casos: %{{y:,}}<extra></extra>",
+        ))
     fig.update_layout(
         title="Distribución mensual (2010–2025)",
+        barmode="stack",
         height=360,
         xaxis=dict(gridcolor="#334155"),
         yaxis=dict(gridcolor="#334155"),
-        showlegend=False,
+        legend=dict(orientation="h", y=1.1, x=0),
+        showlegend=True,
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
-        margin=dict(t=40, b=40, l=10, r=10),
+        margin=dict(t=60, b=40, l=10, r=10),
     )
     return fig
 
 
 def fig_sex(d: pl.DataFrame) -> go.Figure:
-    counts = (
-        d.filter(pl.col("SEXO").is_in(["HOMBRE", "MUJER"]))
-        .group_by("SEXO").agg(pl.len().alias("n"))
-        .sort("SEXO")
-    )
+    counts = d.group_by("sexo_cat").agg(pl.len().alias("n")).sort("sexo_cat")
     if len(counts) == 0:
         return go.Figure()
+    labels = counts["sexo_cat"].to_list()
     fig = go.Figure(go.Pie(
-        labels=counts["SEXO"].to_list(),
+        labels=labels,
         values=counts["n"].to_list(),
         hole=0.5,
         textinfo="label+percent",
-        marker_colors=["#2E86AB", "#F4A261"],
+        marker_colors=[SEXO_COLORS.get(s, "#64748B") for s in labels],
     ))
     fig.update_layout(
         title="Distribución por sexo",
@@ -153,80 +175,133 @@ def fig_age(d: pl.DataFrame) -> go.Figure:
     if len(with_age) == 0:
         return go.Figure()
 
-    counts = []
-    for lo, hi in AGE_RANGES:
-        n = len(with_age.filter(pl.col("edad").is_between(lo, hi)))
-        counts.append(n)
-
-    total = sum(counts)
-    pcts = [c / total * 100 if total > 0 else 0 for c in counts]
-
-    fig = go.Figure(go.Bar(
-        x=AGE_LABELS, y=pcts,
-        marker_color="#F4A261",
-        text=[f"{p:.1f}%" for p in pcts],
-        textposition="outside",
-        hovertemplate="<b>%{x}</b><br>%{y:.1f}%<extra></extra>",
-    ))
+    total = len(with_age)
+    fig = go.Figure()
+    for sexo in SEXO_ORDER:
+        subset = with_age.filter(pl.col("sexo_cat") == sexo)
+        pcts = [
+            len(subset.filter(pl.col("edad").is_between(lo, hi))) / total * 100
+            for lo, hi in AGE_RANGES
+        ]
+        if sum(pcts) == 0:
+            continue
+        fig.add_trace(go.Bar(
+            x=AGE_LABELS, y=pcts, name=sexo,
+            marker_color=SEXO_COLORS[sexo],
+            hovertemplate=f"<b>%{{x}}</b> · {sexo}<br>%{{y:.1f}}%<extra></extra>",
+        ))
     fig.update_layout(
         title="Distribución por grupo de edad",
+        barmode="stack",
         height=360,
         xaxis=dict(gridcolor="#334155", title="Edad al desaparecer"),
-        yaxis=dict(gridcolor="#334155", ticksuffix="%", range=[0, max(pcts) * 1.2 + 2]),
-        showlegend=False,
+        yaxis=dict(gridcolor="#334155", ticksuffix="%"),
+        legend=dict(orientation="h", y=1.1, x=0),
+        showlegend=True,
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
-        margin=dict(t=40, b=40, l=10, r=10),
+        margin=dict(t=60, b=40, l=10, r=10),
     )
     return fig
 
 
-def fig_state_ranking() -> go.Figure:
-    """Static — always shows all states."""
+def fig_mapa_desaparecidos(d: pl.DataFrame) -> go.Figure:
     agg = (
-        df.filter(pl.col("ENTIDAD").is_not_null())
+        d.filter(
+            pl.col("ENTIDAD").is_not_null() & (pl.col("ENTIDAD") != "SE DESCONOCE")
+        )
         .group_by("ENTIDAD").agg(pl.len().alias("n"))
-        .sort("n", descending=True)
     )
-    states = agg["ENTIDAD"].to_list()
-    ns     = agg["n"].to_list()
-    max_n  = max(ns)
-    colors = [
-        f"rgba(232,72,85,{0.35 + 0.65 * (n / max_n):.2f})" for n in ns
-    ]
-    fig = go.Figure(go.Bar(
-        x=ns, y=states, orientation="h",
-        marker_color=colors,
-        text=[f"{n:,}" for n in ns],
-        textposition="outside",
-        hovertemplate="<b>%{y}</b><br>Casos: %{x:,}<extra></extra>",
-    ))
+    if len(agg) == 0:
+        return go.Figure()
+    # Normalize uppercase ENTIDAD to title case; "ESTADO DE MÉXICO" → "México" (GeoJSON key)
+    def _norm(s: str) -> str:
+        t = s.title()
+        return "México" if t == "Estado De México" else t
+    state_data = pl.DataFrame({
+        "ENTIDAD": [_norm(s) for s in agg["ENTIDAD"].to_list()],
+        "n":       agg["n"].to_list(),
+    })
+    fig = px.choropleth_map(
+        state_data,
+        geojson=MEXICO_GEO,
+        locations="ENTIDAD",
+        color="n",
+        featureidkey="properties.name",
+        color_continuous_scale="YlOrRd",
+        zoom=4.0,
+        center={"lat": 23.6, "lon": -102.5},
+        opacity=0.85,
+        hover_name="ENTIDAD",
+        title="Personas desaparecidas por estado",
+        map_style="carto-darkmatter",
+    )
+    fig.update_traces(
+        hovertemplate="<b>%{hovertext}</b><br>Casos: %{z:,}<extra></extra>"
+    )
+    fig.update_coloraxes(
+        colorbar=dict(
+            title=dict(text="Casos", font=dict(color="#CBD5E1")),
+            tickfont=dict(color="#CBD5E1"),
+        )
+    )
+    fig.update_layout(
+        height=520,
+        margin=dict(l=0, r=0, t=40, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        font_color="#CBD5E1",
+    )
+    return fig
+
+
+def fig_state_ranking(d: pl.DataFrame) -> go.Figure:
+    agg = (
+        d.filter(pl.col("ENTIDAD").is_not_null())
+        .group_by(["ENTIDAD", "sexo_cat"]).agg(pl.len().alias("n"))
+    )
+    if len(agg) == 0:
+        return go.Figure()
+    totals = (
+        agg.group_by("ENTIDAD").agg(pl.col("n").sum().alias("total"))
+        .sort("total", descending=True)
+    )
+    states = totals["ENTIDAD"].to_list()
+    fig = go.Figure()
+    for sexo in SEXO_ORDER:
+        subset = agg.filter(pl.col("sexo_cat") == sexo)
+        st_n = dict(zip(subset["ENTIDAD"].to_list(), subset["n"].to_list()))
+        ns = [st_n.get(s, 0) for s in states]
+        if sum(ns) == 0:
+            continue
+        fig.add_trace(go.Bar(
+            x=ns, y=states, orientation="h", name=sexo,
+            marker_color=SEXO_COLORS[sexo],
+            hovertemplate=f"<b>%{{y}}</b> · {sexo}<br>Casos: %{{x:,}}<extra></extra>",
+        ))
     fig.update_layout(
         title="Total de personas desaparecidas por estado",
+        barmode="stack",
         height=max(340, len(states) * 28 + 80),
         xaxis=dict(gridcolor="#334155"),
         yaxis=dict(gridcolor="rgba(0,0,0,0)", autorange="reversed"),
+        legend=dict(orientation="h", y=-0.05, x=0),
+        showlegend=True,
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
-        margin=dict(t=40, b=40, l=10, r=100),
+        margin=dict(t=40, b=80, l=10, r=100),
     )
     return fig
 
 
 def compute_kpis(d: pl.DataFrame):
-    n_total = len(d)
-    with_sex = d.filter(pl.col("SEXO").is_in(["HOMBRE", "MUJER"]))
-    n_sex = len(with_sex)
-    pct_hombre = float((with_sex["SEXO"] == "HOMBRE").sum() / n_sex * 100) if n_sex > 0 else 0
-    pct_mujer  = float((with_sex["SEXO"] == "MUJER").sum()  / n_sex * 100) if n_sex > 0 else 0
-    anual = (d.filter(pl.col("anio_desap").is_not_null())
-             .group_by("anio_desap").agg(pl.len().alias("n")))
+    n_total  = len(d)
+    n_hombre = int((d["sexo_cat"] == "Hombre").sum())
+    n_mujer  = int((d["sexo_cat"] == "Mujer").sum())
+    pct_hombre = n_hombre / n_total * 100 if n_total > 0 else 0
+    pct_mujer  = n_mujer  / n_total * 100 if n_total > 0 else 0
+    anual = d.filter(pl.col("anio_desap").is_not_null()).group_by("anio_desap").agg(pl.len().alias("n"))
     peak_year = int(anual.sort("n", descending=True)["anio_desap"][0]) if len(anual) > 0 else 0
     peak_n    = int(anual.sort("n", descending=True)["n"][0]) if len(anual) > 0 else 0
     return n_total, pct_hombre, pct_mujer, peak_year, peak_n
 
-
-# ── Pre-render static chart ───────────────────────────────────────────────────
-
-_fig_state_ranking = fig_state_ranking()
 
 # ── Layout ────────────────────────────────────────────────────────────────────
 
@@ -237,6 +312,12 @@ estado_options = (
     [{"label": "Todo el país", "value": "__all__"}]
     + [{"label": e.title(), "value": e} for e in ESTADOS]
 )
+sexo_options = [
+    {"label": "Todos", "value": "__all__"},
+    {"label": "Hombre",      "value": "Hombre"},
+    {"label": "Mujer",       "value": "Mujer"},
+    {"label": "Desconocido", "value": "Desconocido"},
+]
 
 app.layout = html.Div(
     style={"backgroundColor": "#0F172A", "minHeight": "100vh", "padding": "24px"},
@@ -246,7 +327,7 @@ app.layout = html.Div(
         html.P("Registro Nacional de Personas Desaparecidas y No Localizadas · 133,887 casos",
                style={"color": "#94A3B8", "marginBottom": "24px"}),
 
-        # Filter
+        # Filters
         dbc.Row(style={"marginBottom": "20px"}, children=[
             dbc.Col([
                 html.Label("Estado", style={"color": "#94A3B8", "fontSize": "12px"}),
@@ -259,6 +340,17 @@ app.layout = html.Div(
                            "border": "1px solid #334155"},
                 ),
             ], md=4),
+            dbc.Col([
+                html.Label("Sexo", style={"color": "#94A3B8", "fontSize": "12px"}),
+                dcc.Dropdown(
+                    id="sexo-filter",
+                    options=sexo_options,
+                    value="__all__",
+                    clearable=False,
+                    style={"backgroundColor": "#1E293B", "color": "#CBD5E1",
+                           "border": "1px solid #334155"},
+                ),
+            ], md=3),
         ]),
 
         # KPI row
@@ -301,6 +393,9 @@ app.layout = html.Div(
 
             dcc.Tab(label="Por Estado", style=TAB_STYLE, selected_style=TAB_SEL, children=[
                 html.Div(style={"paddingTop": "20px"}, children=[
+                    dbc.Row(className="g-3", style={"marginBottom": "8px"}, children=[
+                        dbc.Col(dcc.Graph(id="graph-mapa"), md=12),
+                    ]),
                     dbc.Row(className="g-3", children=[
                         dbc.Col(dcc.Graph(id="graph-state-ranking"), md=12),
                     ]),
@@ -320,25 +415,31 @@ app.layout = html.Div(
     Output("graph-sex", "figure"),
     Output("graph-age", "figure"),
     Input("estado-filter", "value"),
+    Input("sexo-filter", "value"),
 )
-def update_all(estado: str):
+def update_all(estado: str, sexo: str):
     d = df if estado == "__all__" else df.filter(pl.col("ENTIDAD") == estado)
+    if sexo != "__all__":
+        d = d.filter(pl.col("sexo_cat") == sexo)
     n_total, pct_h, pct_m, peak_year, peak_n = compute_kpis(d)
     kpis = [
         kpi_card("Total registrados", f"{n_total:,}"),
-        kpi_card("Hombres (con dato)", f"{pct_h:.1f}%", "#2E86AB"),
-        kpi_card("Mujeres (con dato)", f"{pct_m:.1f}%", "#F4A261"),
+        kpi_card("Hombres", f"{pct_h:.1f}%", "#2E86AB"),
+        kpi_card("Mujeres", f"{pct_m:.1f}%", "#F4A261"),
         kpi_card("Año pico", f"{peak_year} ({peak_n:,})", "#E84855"),
     ]
     return kpis, fig_trend(d), fig_monthly(d), fig_sex(d), fig_age(d)
 
 
 @app.callback(
+    Output("graph-mapa", "figure"),
     Output("graph-state-ranking", "figure"),
     Input("estado-filter", "value"),
+    Input("sexo-filter", "value"),
 )
-def update_static(_):
-    return _fig_state_ranking
+def update_state_ranking(_estado: str, sexo: str):
+    d = df if sexo == "__all__" else df.filter(pl.col("sexo_cat") == sexo)
+    return fig_mapa_desaparecidos(d), fig_state_ranking(d)
 
 
 if __name__ == "__main__":

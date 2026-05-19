@@ -1,18 +1,18 @@
 """
 Exports a fully self-contained desaparecidos.html for GitHub Pages.
 
-Estado dropdown works client-side:
-  - Per-state aggregates pre-computed in Python and embedded as JSON
-  - Plotly.newPlot() swaps charts on selection
+Two client-side filters (estado + sexo) pre-computed and embedded as JSON.
+Plotly.newPlot() swaps charts on any selection change.
 
-Static chart (always full dataset):
+Static charts (always full dataset):
+  - Choropleth map
   - State ranking bar
 
-Dynamic charts (update on estado selection):
-  - Annual trend bar
-  - Monthly distribution bar
+Dynamic charts (update on estado + sexo selection):
+  - Annual trend bar (stacked by gender)
+  - Monthly distribution bar (stacked by gender)
   - Sex donut
-  - Age group bar
+  - Age group bar (stacked by gender)
   - KPIs
 
 Run: uv run python export_desaparecidos_html.py
@@ -24,11 +24,13 @@ import plotly.io as pio
 
 from desaparecidos import (
     df, ESTADOS, MES_NOMBRES, AGE_LABELS, AGE_RANGES,
-    fig_state_ranking, compute_kpis,
+    SEXO_ORDER,
+    fig_state_ranking, fig_mapa_desaparecidos, compute_kpis,
 )
 
-CHART_CFG  = {"responsive": True, "displayModeBar": False}
-ALL_KEYS   = ["__all__"] + ESTADOS
+CHART_CFG       = {"responsive": True, "displayModeBar": False}
+ALL_ESTADO_KEYS = ["__all__"] + ESTADOS
+ALL_SEXO_KEYS   = ["__all__", "Hombre", "Mujer", "Desconocido"]
 
 
 # ── HTML helper ───────────────────────────────────────────────────────────────
@@ -51,34 +53,42 @@ def kpi_card(title: str, kpi_id: str, color: str) -> str:
     </div>"""
 
 
-# ── Pre-compute per-state data ────────────────────────────────────────────────
+# ── Pre-compute per-filter data ───────────────────────────────────────────────
 
 def _trend_data(d: pl.DataFrame) -> dict:
     anual = (
         d.filter(pl.col("anio_desap").is_not_null())
-        .group_by("anio_desap").agg(pl.len().alias("n"))
+        .group_by(["anio_desap", "sexo_cat"]).agg(pl.len().alias("n"))
         .sort("anio_desap")
     )
-    return {"years": anual["anio_desap"].to_list(), "n": anual["n"].to_list()}
+    years = sorted(anual["anio_desap"].unique().to_list()) if len(anual) > 0 else []
+    result: dict = {"years": years}
+    for sexo in SEXO_ORDER:
+        sub = anual.filter(pl.col("sexo_cat") == sexo)
+        yr_n = dict(zip(sub["anio_desap"].to_list(), sub["n"].to_list()))
+        result[sexo] = [yr_n.get(y, 0) for y in years]
+    return result
 
 
 def _monthly_data(d: pl.DataFrame) -> dict:
     monthly = (
         d.filter(pl.col("mes_desap").is_not_null() & pl.col("anio_desap").is_between(2010, 2025))
-        .group_by("mes_desap").agg(pl.len().alias("n"))
+        .group_by(["mes_desap", "sexo_cat"]).agg(pl.len().alias("n"))
         .sort("mes_desap")
     )
-    meses = [MES_NOMBRES[m - 1] for m in monthly["mes_desap"].to_list()]
-    return {"meses": meses, "n": monthly["n"].to_list()}
+    meses_idx = sorted(monthly["mes_desap"].unique().to_list()) if len(monthly) > 0 else []
+    meses_lbl = [MES_NOMBRES[m - 1] for m in meses_idx]
+    result: dict = {"meses": meses_lbl}
+    for sexo in SEXO_ORDER:
+        sub = monthly.filter(pl.col("sexo_cat") == sexo)
+        m_n = dict(zip(sub["mes_desap"].to_list(), sub["n"].to_list()))
+        result[sexo] = [m_n.get(m, 0) for m in meses_idx]
+    return result
 
 
 def _sex_data(d: pl.DataFrame) -> dict:
-    counts = (
-        d.filter(pl.col("SEXO").is_in(["HOMBRE", "MUJER"]))
-        .group_by("SEXO").agg(pl.len().alias("n"))
-        .sort("SEXO")
-    )
-    return {"labels": counts["SEXO"].to_list(), "values": counts["n"].to_list()}
+    counts = d.group_by("sexo_cat").agg(pl.len().alias("n")).sort("sexo_cat")
+    return {"labels": counts["sexo_cat"].to_list(), "values": counts["n"].to_list()}
 
 
 def _age_data(d: pl.DataFrame) -> dict:
@@ -89,125 +99,160 @@ def _age_data(d: pl.DataFrame) -> dict:
     ).with_columns(
         (pl.col("anio_desap") - pl.col("anio_nac")).alias("edad")
     ).filter(pl.col("edad").is_between(0, 100))
-
     total = len(with_age)
-    pcts = []
-    for lo, hi in AGE_RANGES:
-        n = len(with_age.filter(pl.col("edad").is_between(lo, hi)))
-        pcts.append(round(n / total * 100, 1) if total > 0 else 0)
-    return {"labels": AGE_LABELS, "pcts": pcts}
+    result: dict = {"labels": AGE_LABELS}
+    for sexo in SEXO_ORDER:
+        sub = with_age.filter(pl.col("sexo_cat") == sexo)
+        result[sexo] = [
+            round(len(sub.filter(pl.col("edad").is_between(lo, hi))) / total * 100, 1)
+            if total > 0 else 0
+            for lo, hi in AGE_RANGES
+        ]
+    return result
 
 
-def build_state_data() -> str:
+def build_all_data() -> str:
     result = {}
-    for key in ALL_KEYS:
-        label = "todo el país" if key == "__all__" else key
-        print(f"  Computing {label}…")
-        d = df if key == "__all__" else df.filter(pl.col("ENTIDAD") == key)
-        n_total, pct_h, pct_m, peak_year, peak_n = compute_kpis(d)
-        result[key] = {
-            "kpi": {
-                "n":          n_total,
-                "pct_h":      round(pct_h, 1),
-                "pct_m":      round(pct_m, 1),
-                "peak_year":  peak_year,
-                "peak_n":     peak_n,
-            },
-            "trend":   _trend_data(d),
-            "monthly": _monthly_data(d),
-            "sex":     _sex_data(d),
-            "age":     _age_data(d),
-        }
+    total = len(ALL_ESTADO_KEYS) * len(ALL_SEXO_KEYS)
+    count = 0
+    for estado_key in ALL_ESTADO_KEYS:
+        d_e = df if estado_key == "__all__" else df.filter(pl.col("ENTIDAD") == estado_key)
+        for sexo_key in ALL_SEXO_KEYS:
+            d = d_e if sexo_key == "__all__" else d_e.filter(pl.col("sexo_cat") == sexo_key)
+            count += 1
+            print(f"  [{count}/{total}] {estado_key} | {sexo_key}")
+            n_total, pct_h, pct_m, peak_year, peak_n = compute_kpis(d)
+            result[f"{estado_key}|{sexo_key}"] = {
+                "kpi": {
+                    "n":         n_total,
+                    "pct_h":     round(pct_h, 1),
+                    "pct_m":     round(pct_m, 1),
+                    "peak_year": peak_year,
+                    "peak_n":    peak_n,
+                },
+                "trend":   _trend_data(d),
+                "monthly": _monthly_data(d),
+                "sex":     _sex_data(d),
+                "age":     _age_data(d),
+            }
     return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
 
 # ── Render static charts ──────────────────────────────────────────────────────
 
 print("Rendering static charts…")
-chart_states = chart_div(fig_state_ranking(), "chart-states", first=True)
+chart_mapa   = chart_div(fig_mapa_desaparecidos(df), "chart-mapa", first=True)
+chart_states = chart_div(fig_state_ranking(df),      "chart-states")
 
-print("Pre-computing per-state data…")
-state_data_json = build_state_data()
+print("Pre-computing per-filter data…")
+all_data_json = build_all_data()
 
-# ── Estado dropdown options ───────────────────────────────────────────────────
+# ── Dropdown options ──────────────────────────────────────────────────────────
 
 estado_opts = '<option value="__all__">Todo el país</option>\n' + "\n".join(
     f'<option value="{e}">{e.title()}</option>' for e in ESTADOS
+)
+sexo_opts = (
+    '<option value="__all__">Todos</option>\n'
+    '<option value="Hombre">Hombre</option>\n'
+    '<option value="Mujer">Mujer</option>\n'
+    '<option value="Desconocido">Desconocido</option>'
 )
 
 # ── JavaScript ────────────────────────────────────────────────────────────────
 
 js = """
-const CFG = {responsive: true, displayModeBar: false};
+const CFG  = {responsive: true, displayModeBar: false};
 const BASE = {
     paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
     font: {color: "#CBD5E1"},
 };
 const AXIS = (extra) => Object.assign({gridcolor: "#334155"}, extra || {});
-const MARGIN = {t:40, b:40, l:10, r:10};
+const SEXO_COLORS = {Hombre: "#2E86AB", Mujer: "#F4A261", Desconocido: "#64748B"};
+const SEXO_ORDER  = ["Hombre", "Mujer", "Desconocido"];
+
+// Build stacked bar traces for one chart's gender-split data
+function genderTraces(D, xKey, hoverTpl) {
+    return SEXO_ORDER
+        .filter(s => D[s] && D[s].some(v => v > 0))
+        .map(s => ({
+            type: "bar", name: s, x: D[xKey], y: D[s],
+            marker: {color: SEXO_COLORS[s]},
+            hovertemplate: hoverTpl + " · " + s + "<br>" + (
+                hoverTpl.includes("Casos") ? "Casos: %{y:,}" : "%{y:.1f}%"
+            ) + "<extra></extra>",
+        }));
+}
 
 function updateCharts(key) {
-    const D = STATE_DATA[key];
+    const D = ALL_DATA[key];
     if (!D) return;
 
     // KPIs
-    document.getElementById("kpi-n").textContent       = D.kpi.n.toLocaleString("es-MX");
+    document.getElementById("kpi-n").textContent      = D.kpi.n.toLocaleString("es-MX");
     document.getElementById("kpi-hombre").textContent  = D.kpi.pct_h + "%";
     document.getElementById("kpi-mujer").textContent   = D.kpi.pct_m + "%";
     document.getElementById("kpi-pico").textContent    = D.kpi.peak_year + " (" + D.kpi.peak_n.toLocaleString("es-MX") + ")";
 
-    // Annual trend
-    Plotly.newPlot("chart-trend", [{
-        type: "bar", x: D.trend.years, y: D.trend.n,
-        marker: {color: "#E84855"},
-        hovertemplate: "<b>%{x}</b><br>Casos: %{y:,}<extra></extra>",
-    }], Object.assign({}, BASE, {
-        title: {text: "Personas desaparecidas por año"},
-        height: 380, margin: MARGIN, showlegend: false,
-        xaxis: AXIS({title: "Año"}),
-        yaxis: AXIS({title: "Casos registrados"}),
-    }), CFG);
+    // Annual trend (stacked by gender)
+    Plotly.newPlot("chart-trend",
+        SEXO_ORDER.filter(s => D.trend[s] && D.trend[s].some(v => v > 0)).map(s => ({
+            type: "bar", name: s, x: D.trend.years, y: D.trend[s],
+            marker: {color: SEXO_COLORS[s]},
+            hovertemplate: "<b>%{x}</b> · " + s + "<br>Casos: %{y:,}<extra></extra>",
+        })),
+        Object.assign({}, BASE, {
+            title: {text: "Personas desaparecidas por año"},
+            barmode: "stack", height: 380,
+            margin: {t:40, b:70, l:10, r:10},
+            showlegend: true, legend: {orientation: "h", y: -0.18, x: 0},
+            xaxis: AXIS({title: "Año"}),
+            yaxis: AXIS({title: "Casos registrados"}),
+        }), CFG);
 
-    // Monthly distribution
-    const avg = D.monthly.n.reduce((a, b) => a + b, 0) / D.monthly.n.length;
-    const mColors = D.monthly.n.map(n => n > avg ? "#E84855" : "#F4A261");
-    Plotly.newPlot("chart-monthly", [{
-        type: "bar", x: D.monthly.meses, y: D.monthly.n,
-        marker: {color: mColors},
-        hovertemplate: "<b>%{x}</b><br>Casos: %{y:,}<extra></extra>",
-    }], Object.assign({}, BASE, {
-        title: {text: "Distribución mensual (2010–2025)"},
-        height: 360, margin: MARGIN, showlegend: false,
-        xaxis: AXIS(),
-        yaxis: AXIS(),
-    }), CFG);
+    // Monthly distribution (stacked by gender)
+    Plotly.newPlot("chart-monthly",
+        SEXO_ORDER.filter(s => D.monthly[s] && D.monthly[s].some(v => v > 0)).map(s => ({
+            type: "bar", name: s, x: D.monthly.meses, y: D.monthly[s],
+            marker: {color: SEXO_COLORS[s]},
+            hovertemplate: "<b>%{x}</b> · " + s + "<br>Casos: %{y:,}<extra></extra>",
+        })),
+        Object.assign({}, BASE, {
+            title: {text: "Distribución mensual (2010–2025)"},
+            barmode: "stack", height: 360,
+            margin: {t:60, b:40, l:10, r:10},
+            showlegend: true, legend: {orientation: "h", y: 1.1, x: 0},
+            xaxis: AXIS(), yaxis: AXIS(),
+        }), CFG);
 
     // Sex donut
+    const sexColors = D.sex.labels.map(l => SEXO_COLORS[l] || "#64748B");
     Plotly.newPlot("chart-sex", [{
         type: "pie", hole: 0.5,
         labels: D.sex.labels, values: D.sex.values,
         textinfo: "label+percent",
-        marker: {colors: ["#2E86AB", "#F4A261"]},
+        marker: {colors: sexColors},
     }], Object.assign({}, BASE, {
         title: {text: "Distribución por sexo"},
         height: 360, showlegend: false,
         margin: {t:40, b:40, l:10, r:10},
     }), CFG);
 
-    // Age group bar
-    const maxPct = Math.max(...D.age.pcts);
-    Plotly.newPlot("chart-age", [{
-        type: "bar", x: D.age.labels, y: D.age.pcts,
-        marker: {color: "#F4A261"},
-        text: D.age.pcts.map(p => p.toFixed(1) + "%"),
-        textposition: "outside",
-        hovertemplate: "<b>%{x}</b><br>%{y:.1f}%<extra></extra>",
-    }], Object.assign({}, BASE, {
-        title: {text: "Distribución por grupo de edad"},
-        height: 360, margin: MARGIN, showlegend: false,
-        xaxis: AXIS({title: "Edad al desaparecer"}),
-        yaxis: AXIS({ticksuffix: "%", range: [0, maxPct * 1.2 + 2]}),
-    }), CFG);
+    // Age group bar (stacked by gender)
+    Plotly.newPlot("chart-age",
+        SEXO_ORDER.filter(s => D.age[s] && D.age[s].some(v => v > 0)).map(s => ({
+            type: "bar", name: s, x: D.age.labels, y: D.age[s],
+            marker: {color: SEXO_COLORS[s]},
+            hovertemplate: "<b>%{x}</b> · " + s + "<br>%{y:.1f}%<extra></extra>",
+        })),
+        Object.assign({}, BASE, {
+            title: {text: "Distribución por grupo de edad"},
+            barmode: "stack", height: 360,
+            margin: {t:60, b:40, l:10, r:10},
+            showlegend: true, legend: {orientation: "h", y: 1.1, x: 0},
+            xaxis: AXIS({title: "Edad al desaparecer"}),
+            yaxis: AXIS({ticksuffix: "%"}),
+        }), CFG);
 }
 
 function applyWhenReady(key, attempt) {
@@ -221,9 +266,20 @@ function applyWhenReady(key, attempt) {
     }
 }
 
+function currentKey() {
+    const p = new URLSearchParams(window.location.search);
+    return (p.get("estado") || "__all__") + "|" + (p.get("sexo") || "__all__");
+}
+
 document.getElementById("estado-select").addEventListener("change", function () {
     const url = new URL(window.location.href);
     url.searchParams.set("estado", this.value);
+    window.location.href = url.toString();
+});
+
+document.getElementById("sexo-select").addEventListener("change", function () {
+    const url = new URL(window.location.href);
+    url.searchParams.set("sexo", this.value);
     window.location.href = url.toString();
 });
 
@@ -239,12 +295,22 @@ document.querySelectorAll("button[data-bs-toggle='tab']").forEach(btn => {
 });
 
 window.addEventListener("load", function () {
-    const key = new URLSearchParams(window.location.search).get("estado") || "__all__";
-    if (key !== "__all__") {
-        document.getElementById("estado-select").value = key;
+    const params  = new URLSearchParams(window.location.search);
+    const estado  = params.get("estado") || "__all__";
+    const sexo    = params.get("sexo")   || "__all__";
+    const key     = estado + "|" + sexo;
+
+    if (estado !== "__all__") document.getElementById("estado-select").value = estado;
+    if (sexo   !== "__all__") document.getElementById("sexo-select").value   = sexo;
+
+    if (estado !== "__all__" || sexo !== "__all__") {
         document.getElementById("filter-notice").style.display = "flex";
-        document.getElementById("filter-badge").textContent = key.toLowerCase().replace(/\\b\\w/g, c => c.toUpperCase());
+        const parts = [];
+        if (estado !== "__all__") parts.push(estado.toLowerCase().replace(/\\b\\w/g, c => c.toUpperCase()));
+        if (sexo   !== "__all__") parts.push(sexo);
+        document.getElementById("filter-badge").textContent = parts.join(" · ");
     }
+
     const hash = window.location.hash;
     if (hash) {
         const btn = document.querySelector("button[data-bs-target='" + hash + "']");
@@ -257,10 +323,10 @@ window.addEventListener("load", function () {
 # ── Assemble HTML ─────────────────────────────────────────────────────────────
 
 kpis_html = "".join([
-    kpi_card("Total registrados",       "kpi-n",      "#CBD5E1"),
-    kpi_card("Hombres (con dato)",      "kpi-hombre", "#2E86AB"),
-    kpi_card("Mujeres (con dato)",      "kpi-mujer",  "#F4A261"),
-    kpi_card("Año con más casos",       "kpi-pico",   "#E84855"),
+    kpi_card("Total registrados",  "kpi-n",      "#CBD5E1"),
+    kpi_card("Hombres",            "kpi-hombre", "#2E86AB"),
+    kpi_card("Mujeres",            "kpi-mujer",  "#F4A261"),
+    kpi_card("Año con más casos",  "kpi-pico",   "#E84855"),
 ])
 
 html_out = f"""<!DOCTYPE html>
@@ -321,15 +387,22 @@ html_out = f"""<!DOCTYPE html>
 
   <div class="filter-box mb-3">
     <div class="row g-3 align-items-end">
-      <div class="col-10 col-md-4">
-        <p style="color:#94A3B8;font-size:.82rem;margin-bottom:6px;">Estado
-          <small style="color:#64748B"> — filtra tendencia, perfil y KPIs; el ranking siempre muestra todos los estados</small>
-        </p>
+      <div class="col-12 col-md-4">
+        <p style="color:#94A3B8;font-size:.82rem;margin-bottom:6px;">Estado</p>
         <select id="estado-select" class="form-select dark-select">
           {estado_opts}
         </select>
       </div>
-      <div class="col-2 col-md-8 d-flex align-items-end">
+      <div class="col-12 col-md-3">
+        <p style="color:#94A3B8;font-size:.82rem;margin-bottom:6px;">Sexo</p>
+        <select id="sexo-select" class="form-select dark-select">
+          {sexo_opts}
+        </select>
+      </div>
+      <div class="col-12 col-md-5 d-flex align-items-end">
+        <div style="color:#64748B;font-size:.78rem;margin-bottom:6px;margin-right:12px;">
+          El mapa y el ranking muestran siempre todos los estados
+        </div>
         <div id="filter-notice">
           <span id="filter-badge"></span>
           <button id="clear-filter">✕ limpiar</button>
@@ -389,6 +462,9 @@ html_out = f"""<!DOCTYPE html>
     </div>
 
     <div class="tab-pane fade" id="tab-estados" role="tabpanel">
+      <div class="row g-3 mb-2">
+        <div class="col-12">{chart_mapa}</div>
+      </div>
       <div class="row g-3">
         <div class="col-12">{chart_states}</div>
       </div>
@@ -401,7 +477,7 @@ html_out = f"""<!DOCTYPE html>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
         crossorigin="anonymous"></script>
 <script>
-const STATE_DATA = {state_data_json};
+const ALL_DATA = {all_data_json};
 {js}
 </script>
 </body>
