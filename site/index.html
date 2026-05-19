@@ -44,11 +44,11 @@
     }
 
     .card {
+      position: relative;
       background: #1E293B;
       border: 1px solid #334155;
       border-radius: 12px;
       padding: 24px;
-      text-decoration: none;
       color: inherit;
       transition: border-color .15s, transform .15s, box-shadow .15s;
       display: flex;
@@ -96,11 +96,38 @@
       color: #64748B;
     }
 
+    .card-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: auto;
+      padding-top: 4px;
+    }
+
     .card-arrow {
       color: #2E86AB;
       font-size: .85rem;
       font-weight: 600;
-      margin-top: auto;
+      text-decoration: none;
+    }
+
+    /* Stretched link — invisible overlay that makes the whole card clickable */
+    .card-arrow::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+    }
+
+    .card-source {
+      position: relative;
+      z-index: 1;
+      color: #94A3B8;
+      font-size: .75rem;
+      text-decoration: none;
+    }
+
+    .card-source:hover {
+      color: #F1F5F9;
     }
 
     footer {
@@ -121,7 +148,7 @@
 
   <div class="grid">
 
-    <a class="card" href="inah_sites.html">
+    <div class="card">
       <div class="card-icon">🏛️</div>
       <div class="card-title">Visitantes INAH</div>
       <div class="card-desc">
@@ -133,10 +160,13 @@
         <span class="tag">1996–2025</span>
         <span class="tag">Cultura</span>
       </div>
-      <div class="card-arrow">Ver dashboard →</div>
-    </a>
+      <div class="card-footer">
+        <a class="card-arrow" href="inah_sites.html">Ver dashboard →</a>
+        <a class="card-source" href="https://datamx.io/dataset/estadisticas-de-visitantes-a-museos-y-zonas-arqueologicas-abiertas-al-publico-1996-2024" target="_blank" rel="noopener">Fuente de datos ↗</a>
+      </div>
+    </div>
 
-    <a class="card" href="productos_agricolas.html">
+    <div class="card">
       <div class="card-icon">🌾</div>
       <div class="card-title">Producción Agrícola</div>
       <div class="card-desc">
@@ -148,10 +178,13 @@
         <span class="tag">1980–2024</span>
         <span class="tag">Agricultura</span>
       </div>
-      <div class="card-arrow">Ver dashboard →</div>
-    </a>
+      <div class="card-footer">
+        <a class="card-arrow" href="productos_agricolas.html">Ver dashboard →</a>
+        <a class="card-source" href="https://datamx.io/dataset/produccion-agricola-en-mexico-1980-2024" target="_blank" rel="noopener">Fuente de datos ↗</a>
+      </div>
+    </div>
 
-    <a class="card" href="desaparecidos.html">
+    <div class="card">
       <div class="card-icon">🔍</div>
       <div class="card-title">Personas Desaparecidas</div>
       <div class="card-desc">
@@ -163,10 +196,13 @@
         <span class="tag">2000–2025</span>
         <span class="tag">Derechos humanos</span>
       </div>
-      <div class="card-arrow">Ver dashboard →</div>
-    </a>
+      <div class="card-footer">
+        <a class="card-arrow" href="desaparecidos.html">Ver dashboard →</a>
+        <a class="card-source" href="https://datamx.io/dataset/personas-desaparecidas-y-no-localizadas-en-mexico" target="_blank" rel="noopener">Fuente de datos ↗</a>
+      </div>
+    </div>
 
-    <a class="card" href="temperaturas_lluvias.html">
+    <div class="card">
       <div class="card-icon">🌡️</div>
       <div class="card-title">Temperaturas y Precipitaciones</div>
       <div class="card-desc">
@@ -178,10 +214,13 @@
         <span class="tag">1985–2025</span>
         <span class="tag">Clima</span>
       </div>
-      <div class="card-arrow">Ver dashboard →</div>
-    </a>
+      <div class="card-footer">
+        <a class="card-arrow" href="temperaturas_lluvias.html">Ver dashboard →</a>
+        <a class="card-source" href="https://datamx.io/es/dataset/temperaturas-mensuales-en-mexico-1985-2025" target="_blank" rel="noopener">Fuente de datos ↗</a>
+      </div>
+    </div>
 
-    <a class="card" href="calidad_agua_escuelas.html">
+    <div class="card">
       <div class="card-icon">💧</div>
       <div class="card-title">Calidad del Agua en Escuelas</div>
       <div class="card-desc">
@@ -193,10 +232,13 @@
         <span class="tag">2014–2026</span>
         <span class="tag">Salud</span>
       </div>
-      <div class="card-arrow">Ver dashboard →</div>
-    </a>
+      <div class="card-footer">
+        <a class="card-arrow" href="calidad_agua_escuelas.html">Ver dashboard →</a>
+        <a class="card-source" href="https://datamx.io/dataset/base-de-datos-en-calidad-del-agua-en-escuelas-2010-2026" target="_blank" rel="noopener">Fuente de datos ↗</a>
+      </div>
+    </div>
 
-    <a class="card" href="entorno_alimentario_escuelas.html">
+    <div class="card">
       <div class="card-icon">🏫</div>
       <div class="card-title">Entorno Alimentario Escolar</div>
       <div class="card-desc">
@@ -208,8 +250,29 @@
         <span class="tag">2014–2025</span>
         <span class="tag">Salud</span>
       </div>
-      <div class="card-arrow">Ver dashboard →</div>
-    </a>
+      <div class="card-footer">
+        <a class="card-arrow" href="entorno_alimentario_escuelas.html">Ver dashboard →</a>
+        <a class="card-source" href="https://datamx.io/es/dataset/el-entorno-alimentario-en-escuelas-de-educacion-basica-en-mexico" target="_blank" rel="noopener">Fuente de datos ↗</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-icon">🔒</div>
+      <div class="card-title">Incidencia Delictiva</div>
+      <div class="card-desc">
+        Carpetas de investigación del fuero común por municipio y tipo de delito.
+        2.8 millones de registros, 32 estados, 49 tipos de delito · 2015–2026.
+      </div>
+      <div class="card-tags">
+        <span class="tag">2.8M registros</span>
+        <span class="tag">2015–2026</span>
+        <span class="tag">Seguridad</span>
+      </div>
+      <div class="card-footer">
+        <a class="card-arrow" href="incidencia_delictiva.html">Ver dashboard →</a>
+        <a class="card-source" href="https://www.gob.mx/sesnsp/acciones-y-programas/datos-abiertos-de-incidencia-delictiva" target="_blank" rel="noopener">Fuente de datos ↗</a>
+      </div>
+    </div>
 
   </div>
 

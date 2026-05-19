@@ -39,6 +39,31 @@ for col in df.columns:
 
 ---
 
+## Large datasets (≥ 100k rows) — ask first, then optimize
+
+If the dataset has **100k+ rows**, stop before writing any chart and confirm the optimization approach with the user. Show this checklist and agree on which steps apply:
+
+1. **`scan_parquet` / `scan_csv`** — use lazy evaluation; never `read_parquet` at module level.
+2. **Replace `unpivot` with `sum_horizontal`** — `unpivot` on wide data multiplies rows (e.g. ×12 for monthly columns); `sum_horizontal` stays at the original count.
+3. **Pre-aggregate at startup, not in callbacks** — `group_by().agg()` once at startup into small summary DataFrames; callbacks filter those, never the raw data.
+4. **`pl.collect_all([q1, q2, q3])`** — collect multiple lazy queries in a single file scan instead of N separate passes.
+5. **Never call `.to_pandas()`** — Polars DataFrames pass directly to Plotly Express; converting adds memory and requires pandas as a dependency.
+6. **Only `.collect()` on aggregated frames** — the raw scan should never be collected; only the already-grouped result frames get `.collect()`.
+
+```python
+# Pattern: scan → horizontal sum → collect_all
+lf = (
+    pl.scan_parquet("data/file.parquet")
+    .with_columns(pl.sum_horizontal(*[pl.col(m).fill_null(0) for m in MONTH_COLS]).alias("total"))
+    .select(["KEY_COL1", "KEY_COL2", "total"])
+)
+q1 = lf.group_by(["KEY_COL1"]).agg(pl.col("total").sum())
+q2 = lf.group_by(["KEY_COL1", "KEY_COL2"]).agg(pl.col("total").sum())
+agg1, agg2 = pl.collect_all([q1, q2])   # single scan, two results
+```
+
+---
+
 ## Phase 2 — Architecture decisions
 
 ### Figure factories
@@ -121,6 +146,13 @@ Accent blue: `#2E86AB`. Green: `#3BB273`. Orange: `#F4A261`. Red: `#E84855`.
 - Horizontal bars with variable rows: `max(300, n_rows * 28 + 80)`
 - Maps: 580–620 px
 
+**Stacked bar legend placement:**
+Legend at `y=1.1` with a small top margin overlaps the title or the tallest bars. Move it below instead:
+```python
+legend=dict(orientation="h", y=-0.18, x=0),
+margin=dict(t=40, b=70, l=10, r=10),
+```
+
 ---
 
 ## Phase 5 — Static HTML export
@@ -155,8 +187,52 @@ window.addEventListener("load", function() {
 });
 ```
 
-Charts that should update on filter: trend, top-N bar, KPIs.  
-Charts that stay static (full-dataset context): maps, technology comparisons, scatter.
+**Decide static vs dynamic before writing the exporter.** This decision shapes the whole architecture — changing it later requires restructuring the JS.
+
+| Chart type | Rule |
+|---|---|
+| Trend, monthly, age, KPIs | Dynamic — update on every filter change |
+| Choropleth map | Static — always full dataset |
+| State/category ranking bar | Static — always full dataset |
+| Scatter, technology comparison | Static — always full dataset |
+
+**Two filters → compound key.** Pre-compute all combinations and index by `"A|B"`. With Polars, 130+ combos typically runs in under 2 seconds — the naive loop is fine.
+
+```python
+for filter_a in ALL_A:
+    for filter_b in ALL_B:
+        d = df.filter(...)
+        result[f"{filter_a}|{filter_b}"] = build_payload(d)
+```
+
+```js
+const key = selectA.value + "|" + selectB.value;
+updateCharts(ALL_DATA[key]);
+```
+
+**`include_plotlyjs="cdn"` only on the first pre-rendered chart.** All subsequent `pio.to_html()` calls pass `False`. The order in the HTML file determines which chart loads the library — make it a regular bar or line chart, not a map.
+
+```python
+chart_map    = chart_div(fig_map(df),    "chart-map",    first=True)   # loads Plotly CDN
+chart_states = chart_div(fig_states(df), "chart-states", first=False)  # reuses it
+```
+
+**`applyWhenReady` must anchor to a regular chart, not a map.** Choropleth maps use WebGL/maplibre and never produce `svg.main-svg`. Wait on a bar or line chart that renders as SVG instead.
+
+```js
+function applyWhenReady(key, attempt) {
+    attempt = attempt || 0;
+    if (attempt > 120) { updateCharts(key); return; }
+    // ✓ bar/line chart — renders as SVG
+    const el = document.getElementById("chart-bar");
+    // ✗ don't use "chart-map" — choropleth uses WebGL, no svg.main-svg
+    if (el && el.querySelector("svg.main-svg")) {
+        updateCharts(key);
+    } else {
+        setTimeout(() => applyWhenReady(key, attempt + 1), 80);
+    }
+}
+```
 
 ---
 
