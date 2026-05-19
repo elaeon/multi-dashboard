@@ -175,6 +175,73 @@ Charts that stay static (full-dataset context): maps, technology comparisons, sc
 
 ---
 
+## Phase 6 — Insight analysis (always run after the dashboard is built)
+
+Once the dashboard is working, run a structured analysis on the dataframe to surface findings the user should know about. Don't wait to be asked.
+
+### What to compute
+
+```python
+# 1. Baseline: % or mean for every key column
+for col in KEY_COLS:
+    valid = df[col].drop_nulls()
+    print(col, f"{float(valid.mean()*100):.1f}%", f"n={len(valid):,}")
+
+# 2. Trend over time: does anything get better or worse?
+agg = df.group_by("YEAR_COL").agg([pl.col(c).mean() for c in KEY_COLS]).sort("YEAR_COL")
+print(agg)
+
+# 3. Cross-tabulations: do bad things cluster together?
+# e.g. records where condition_A AND condition_B AND condition_C
+bad = df.filter((pl.col("A") == BAD) & (pl.col("B") == BAD) & (pl.col("C") == BAD))
+base = df.filter(pl.col("A").is_not_null() & pl.col("B").is_not_null() & pl.col("C").is_not_null())
+print(f"Triple problem: {len(bad)/len(base)*100:.1f}%")
+
+# 4. Geographic/categorical breakdown: who has it worst?
+agg_geo = (
+    df.filter(pl.col("KEY").is_not_null() & pl.col("GEO").str.len_chars().gt(3))
+    .group_by("GEO")
+    .agg(pl.col("KEY").mean().alias("pct"), pl.col("KEY").count().alias("n"))
+    .filter(pl.col("n") >= 50)
+    .sort("pct", descending=True)
+)
+print(agg_geo.head(10))
+
+# 5. Contradictions: records where two logically opposed things are both true
+contra = df.filter((pl.col("BAD_THING") == 1) & (pl.col("CLAIMS_GOOD") == 1))
+print(f"Contradiction: {len(contra)/len(base)*100:.1f}%")
+```
+
+### How to present findings
+
+Order by urgency, not by column order. Lead with numbers. Use this structure:
+
+1. **The most alarming single number** — one sentence, one stat.
+2. **A trend that got worse over time** — name the before/after values and the break point.
+3. **A clustering effect** — two or three bad conditions that co-occur more than expected.
+4. **Geographic or categorical extremes** — who has it worst (name the specific entity).
+5. **A contradiction** — something that shouldn't be true simultaneously but is.
+6. **The most actionable finding** — what could actually be fixed, and why it's tractable.
+
+Present your findings to the user to choice which are worth to add in the dashboard
+
+### What makes a finding "shocking"
+
+- A rate above 90% or below 10% for something that should be the opposite
+- A metric that got significantly worse across time periods (not noise — a sustained drop)
+- A co-occurrence rate that is much higher than the individual rates would predict
+- A geographic unit that is an extreme outlier with a large enough sample to trust
+- A regulation or policy that exists on paper but the data shows near-zero compliance
+
+### What to skip
+
+- Findings that are obvious from the domain (e.g. "more sales in December")
+- Differences smaller than 5 percentage points between groups
+- Patterns with n < 50 — too small to be reliable
+- Restatements of what the charts already show without adding interpretation
+
+---
+
 ## Verification checklist
 
 ```python

@@ -103,6 +103,24 @@ def kpi_card(title: str, value: str, color: str = "#CBD5E1") -> dbc.Col:
 
 # ── Figure factories ──────────────────────────────────────────────────────────
 
+def _add_covid_vline(fig: go.Figure) -> None:
+    # The data jumps from 2018-2019 (index 4) to 2022-2023 (index 5) — x=4.5 sits in that gap
+    fig.add_vline(
+        x=4.5,
+        line=dict(color="#64748B", width=1.5, dash="dash"),
+    )
+    fig.add_annotation(
+        xref="x", yref="paper",
+        x=4.5, y=0.98,
+        text="Pandemia<br>COVID-19",
+        showarrow=False,
+        font=dict(color="#94A3B8", size=11),
+        bgcolor="rgba(15,23,42,0.75)",
+        borderpad=4,
+        xanchor="left",
+    )
+
+
 def fig_panorama(d: pl.DataFrame) -> go.Figure:
     rows = [(Q_LABELS[k], pct_yes(d, k)) for k in Q_COLS]
     rows.sort(key=lambda x: x[1])
@@ -150,6 +168,7 @@ def fig_trend(d: pl.DataFrame) -> go.Figure:
         legend=dict(bgcolor="rgba(0,0,0,0)", font_color="#94A3B8"),
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis")},
     )
+    _add_covid_vline(fig)
     return fig
 
 
@@ -273,6 +292,7 @@ def fig_crisis_trend(d: pl.DataFrame) -> go.Figure:
         margin=dict(t=50, b=100, l=10, r=10),
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
     )
+    _add_covid_vline(fig)
     return fig
 
 
