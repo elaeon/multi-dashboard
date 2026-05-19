@@ -241,30 +241,24 @@ def fig_ranking(d_ent: pl.DataFrame) -> go.Figure:
     return fig
 
 
-def fig_tipos(d_tipo: pl.DataFrame, tipo: str) -> go.Figure:
-    if tipo == 'Todos los delitos':
-        top = d_tipo.sort('Casos', descending=True).head(15)
-        label_col = 'Tipo de delito'
-        title = "Top 15 tipos de delito"
-    else:
-        top = d_tipo.sort('Casos', descending=True).head(15)
-        label_col = 'Entidad'
-        title = f"Top 15 estados · {tipo}"
-    n = len(top)
-    fig = go.Figure(go.Bar(
-        x=top['Casos'].to_list(),
-        y=top[label_col].to_list(),
-        orientation='h',
-        marker_color='#F4A261',
-        hovertemplate="<b>%{y}</b><br>Casos: %{x:,}<extra></extra>",
-    ))
-    fig.update_layout({
-        **CHART_LAYOUT,
-        'title': title,
-        'height': max(300, n * 28 + 80),
-        'yaxis': dict(autorange='reversed', gridcolor="#334155"),
-        'xaxis': dict(gridcolor="#334155", title="Casos"),
-    })
+def fig_tipos(d_ent_yr: pl.DataFrame, tipo: str) -> go.Figure:
+    # Top 15 states by total cases in the selected period
+    top15 = (
+        d_ent_yr.group_by('Entidad').agg(pl.col('Casos').sum())
+        .sort('Casos', descending=True).head(15)['Entidad'].to_list()
+    )
+    d = d_ent_yr.filter(pl.col('Entidad').is_in(top15)).sort(['Entidad', 'Año'])
+    title = "Tendencia por estado · todos los delitos" if tipo == 'Todos los delitos' \
+        else f"Tendencia por estado · {tipo}"
+    fig = px.line(d, x='Año', y='Casos', color='Entidad', title=title, markers=True)
+    fig.update_layout(
+        **{k: v for k, v in CHART_LAYOUT.items() if k not in ('margin', 'xaxis', 'yaxis')},
+        height=460,
+        xaxis=dict(gridcolor="#334155", title="Año", dtick=1),
+        yaxis=dict(gridcolor="#334155", title="Casos"),
+        legend=dict(orientation="h", y=-0.30, x=0, font=dict(size=9), title=None),
+        margin=dict(t=40, b=140, l=10, r=10),
+    )
     return fig
 
 
@@ -519,14 +513,14 @@ def update_all(tipo: str, yr_range: list):
         d_ent = agg_yr_ent.filter(yr_mask).group_by(['Entidad', 'Clave_Ent']).agg(pl.col('Casos').sum())
         d_tipo_totals = agg_yr_tipo.filter(yr_mask).group_by('Tipo de delito').agg(pl.col('Casos').sum())
         d_yr_kpi = agg_yr_bien.filter(yr_mask).group_by('Año').agg(pl.col('Casos').sum())
-        d_breakdown = d_tipo_totals
+        d_breakdown = agg_yr_ent.filter(yr_mask)
     else:
         tipo_mask = pl.col('Tipo de delito') == tipo
         d_yr = agg_yr_tipo.filter(yr_mask & tipo_mask).group_by('Año').agg(pl.col('Casos').sum()).sort('Año')
         d_ent = agg_yr_ent_tipo.filter(yr_mask & tipo_mask).group_by(['Entidad', 'Clave_Ent']).agg(pl.col('Casos').sum())
         d_tipo_totals = agg_yr_tipo.filter(yr_mask & tipo_mask).group_by('Tipo de delito').agg(pl.col('Casos').sum())
         d_yr_kpi = d_yr
-        d_breakdown = d_ent
+        d_breakdown = agg_yr_ent_tipo.filter(yr_mask & tipo_mask).group_by(['Año', 'Entidad']).agg(pl.col('Casos').sum())
 
     total, yoy, yoy_color, top_ent, top_tipo = compute_kpis(
         d_yr_kpi, d_ent, d_tipo_totals, tipo, (yr0, yr1)
