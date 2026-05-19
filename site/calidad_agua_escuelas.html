@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Calidad del Agua en Escuelas</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+        rel="stylesheet" crossorigin="anonymous">
+  <style>
+    body        { background:#0F172A; color:#CBD5E1; padding:24px;
+                  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    .kpi-card   { background:#1E293B; border:1px solid #334155; border-radius:8px;
+                  padding:16px; text-align:center; height:100%; }
+    .kpi-label  { color:#94A3B8; font-size:.78rem; margin-bottom:4px; }
+    .kpi-value  { font-weight:700; margin:0; font-size:1.4rem; }
+    .filter-box { background:#1E293B; border:1px solid #334155; border-radius:8px;
+                  padding:14px 18px; }
+    .filter-label { color:#94A3B8; font-size:.82rem; margin-bottom:6px; }
+    .dark-select { background-color:#1E293B!important; border-color:#334155!important;
+                   color:#CBD5E1!important; }
+    .dark-select:focus { border-color:#2E86AB!important;
+                         box-shadow:0 0 0 .2rem rgba(46,134,171,.25)!important; }
+    .dark-select option { background:#1E293B; color:#CBD5E1; }
+    #filter-notice { display:none; align-items:center; gap:10px;
+                     background:rgba(46,134,171,.12); border:1px solid #2E86AB;
+                     border-radius:6px; padding:8px 14px; font-size:.83rem; color:#94A3B8; }
+    #filter-badge  { background:#2E86AB; color:#fff; border-radius:4px;
+                     padding:2px 8px; font-size:.78rem; }
+    #clear-filter  { cursor:pointer; color:#94A3B8; font-size:.75rem;
+                     border:1px solid #334155; border-radius:4px; padding:2px 8px;
+                     background:transparent; }
+    #clear-filter:hover { color:#F8FAFC; border-color:#64748B; }
+    .nav-tabs   { border-bottom:1px solid #334155; }
+    .nav-link   { color:#94A3B8; background:transparent; border:none;
+                  border-top:2px solid transparent; border-radius:0; padding:10px 18px; }
+    .nav-link:hover  { color:#F8FAFC; background:#1E293B; }
+    .nav-link.active { color:#F8FAFC!important; background:#1E293B!important;
+                       border-top:2px solid #2E86AB!important; font-weight:600; }
+    .tab-content { background:#0F172A; padding-top:20px; }
+    .info-card  { background:#1E293B; border:1px solid #334155; border-radius:8px;
+                  padding:16px; }
+  </style>
+</head>
+<body>
+<div class="container-fluid">
+
+  <div class="mb-4">
+    <h2 style="color:#F8FAFC;font-weight:700;margin-bottom:4px;">
+      Calidad del Agua en Escuelas — Chiapas y México
+    </h2>
+    <p style="color:#64748B;font-size:.9rem;">
+      Análisis bacteriológico y fisicoquímico del agua en planteles educativos · 4,653 muestras · 2014–2026
+    </p>
+  </div>
+
+  <div class="row g-3 mb-3"><div class="col-6 col-md-3">
+      <div class="kpi-card">
+        <p class="kpi-label">Total de muestras</p>
+        <h3 class="kpi-value" id="kpi-n" style="color:#CBD5E1">—</h3>
+      </div>
+    </div><div class="col-6 col-md-3">
+      <div class="kpi-card">
+        <p class="kpi-label">Alto riesgo bacteriológico</p>
+        <h3 class="kpi-value" id="kpi-alto" style="color:#E84855">—</h3>
+      </div>
+    </div><div class="col-6 col-md-3">
+      <div class="kpi-card">
+        <p class="kpi-label">Agua segura (Bajo riesgo)</p>
+        <h3 class="kpi-value" id="kpi-bajo" style="color:#3BB273">—</h3>
+      </div>
+    </div><div class="col-6 col-md-3">
+      <div class="kpi-card">
+        <p class="kpi-label">Municipios monitoreados</p>
+        <h3 class="kpi-value" id="kpi-munis" style="color:#2E86AB">—</h3>
+      </div>
+    </div></div>
+
+  <div class="filter-box mb-3">
+    <div class="row g-3 align-items-end">
+      <div class="col-10 col-md-4">
+        <p class="filter-label mb-1">Año
+          <small style="color:#64748B"> — filtra KPIs y gráficas de municipio y abastecimiento; la tendencia siempre muestra todos los años</small>
+        </p>
+        <select id="year-select" class="form-select dark-select">
+          <option value="__all__">Todos los años</option>
+          <option value="2014">2014</option>
+<option value="2015">2015</option>
+<option value="2016">2016</option>
+<option value="2017">2017</option>
+<option value="2018">2018</option>
+<option value="2019">2019</option>
+<option value="2020">2020</option>
+<option value="2021">2021</option>
+<option value="2022">2022</option>
+<option value="2023">2023</option>
+<option value="2024">2024</option>
+<option value="2025">2025</option>
+<option value="2026">2026</option>
+        </select>
+      </div>
+      <div class="col-2 col-md-8 d-flex align-items-end">
+        <div id="filter-notice">
+          <span id="filter-badge"></span>
+          <button id="clear-filter">✕ limpiar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <ul class="nav nav-tabs mb-0" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-panorama"
+              type="button" role="tab">Panorama General</button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-abastecimiento"
+              type="button" role="tab">Tipo de Abastecimiento</button>
+    </li>
+  </ul>
+
+  <div class="tab-content">
+
+    <div class="tab-pane fade show active" id="tab-panorama" role="tabpanel">
+      <div class="row g-3">
+        <div class="col-12 col-md-7"><div>                        <script>window.PlotlyConfig = {MathJaxConfig: 'local'};</script>
+        <script charset="utf-8" src="https://cdn.plot.ly/plotly-3.5.0.min.js" integrity="sha256-fHbNLP+GlIXN+efbQec78UkemUz3NJp7UmfGxC1tNxs=" crossorigin="anonymous"></script>                <div id="chart-trend" class="plotly-graph-div" style="height:380px; width:100%;"></div>            <script>                window.PLOTLYENV=window.PLOTLYENV || {};                                if (document.getElementById("chart-trend")) {                    Plotly.newPlot(                        "chart-trend",                        [{"hovertemplate":"\u003cb\u003eBajo riesgo\u003c\u002fb\u003e\u003cbr\u003eA\u00f1o: %{x}\u003cbr\u003e%{y:.1f}%\u003cextra\u003e\u003c\u002fextra\u003e","marker":{"color":"#3BB273"},"name":"Bajo riesgo","text":["46%","27%","22%","","","73%","31%","25%","73%","78%","44%","25%","25%"],"textposition":"inside","x":["2014","2015","2016","2017","2018","2019","2020","2021","2022","2023","2024","2025","2026"],"y":[45.9,27.3,22.4,0.5,0.4,73.2,30.7,25.0,73.2,78.4,44.0,25.3,25.0],"type":"bar"},{"hovertemplate":"\u003cb\u003eIntermedio\u003c\u002fb\u003e\u003cbr\u003eA\u00f1o: %{x}\u003cbr\u003e%{y:.1f}%\u003cextra\u003e\u003c\u002fextra\u003e","marker":{"color":"#F4A261"},"name":"Intermedio","text":["13%","9%","29%","","","13%","29%","12%","19%","6%","10%","29%","25%"],"textposition":"inside","x":["2014","2015","2016","2017","2018","2019","2020","2021","2022","2023","2024","2025","2026"],"y":[12.9,9.1,29.3,0.3,0.5,12.9,29.1,11.7,18.8,5.9,10.0,29.1,25.0],"type":"bar"},{"hovertemplate":"\u003cb\u003eAlto riesgo\u003c\u002fb\u003e\u003cbr\u003eA\u00f1o: %{x}\u003cbr\u003e%{y:.1f}%\u003cextra\u003e\u003c\u002fextra\u003e","marker":{"color":"#E84855"},"name":"Alto riesgo","text":["41%","64%","48%","99%","99%","14%","40%","63%","8%","16%","46%","46%","50%"],"textposition":"inside","x":["2014","2015","2016","2017","2018","2019","2020","2021","2022","2023","2024","2025","2026"],"y":[41.2,63.6,48.3,99.2,99.1,14.0,40.2,63.3,8.0,15.7,46.0,45.6,50.0],"type":"bar"}],                        {"template":{"data":{"histogram2dcontour":[{"type":"histogram2dcontour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"choropleth":[{"type":"choropleth","colorbar":{"outlinewidth":0,"ticks":""}}],"histogram2d":[{"type":"histogram2d","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"heatmap":[{"type":"heatmap","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"contourcarpet":[{"type":"contourcarpet","colorbar":{"outlinewidth":0,"ticks":""}}],"contour":[{"type":"contour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"surface":[{"type":"surface","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"mesh3d":[{"type":"mesh3d","colorbar":{"outlinewidth":0,"ticks":""}}],"scatter":[{"fillpattern":{"fillmode":"overlay","size":10,"solidity":0.2},"type":"scatter"}],"parcoords":[{"type":"parcoords","line":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolargl":[{"type":"scatterpolargl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"bar":[{"error_x":{"color":"#2a3f5f"},"error_y":{"color":"#2a3f5f"},"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"bar"}],"scattergeo":[{"type":"scattergeo","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolar":[{"type":"scatterpolar","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"histogram":[{"marker":{"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"histogram"}],"scattergl":[{"type":"scattergl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatter3d":[{"type":"scatter3d","line":{"colorbar":{"outlinewidth":0,"ticks":""}},"marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermap":[{"type":"scattermap","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermapbox":[{"type":"scattermapbox","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterternary":[{"type":"scatterternary","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattercarpet":[{"type":"scattercarpet","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"carpet":[{"aaxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"baxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"type":"carpet"}],"table":[{"cells":{"fill":{"color":"#EBF0F8"},"line":{"color":"white"}},"header":{"fill":{"color":"#C8D4E3"},"line":{"color":"white"}},"type":"table"}],"barpolar":[{"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"barpolar"}],"pie":[{"automargin":true,"type":"pie"}]},"layout":{"autotypenumbers":"strict","colorway":["#636efa","#EF553B","#00cc96","#ab63fa","#FFA15A","#19d3f3","#FF6692","#B6E880","#FF97FF","#FECB52"],"font":{"color":"#2a3f5f"},"hovermode":"closest","hoverlabel":{"align":"left"},"paper_bgcolor":"white","plot_bgcolor":"#E5ECF6","polar":{"bgcolor":"#E5ECF6","angularaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"radialaxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"ternary":{"bgcolor":"#E5ECF6","aaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"baxis":{"gridcolor":"white","linecolor":"white","ticks":""},"caxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"coloraxis":{"colorbar":{"outlinewidth":0,"ticks":""}},"colorscale":{"sequential":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"sequentialminus":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"diverging":[[0,"#8e0152"],[0.1,"#c51b7d"],[0.2,"#de77ae"],[0.3,"#f1b6da"],[0.4,"#fde0ef"],[0.5,"#f7f7f7"],[0.6,"#e6f5d0"],[0.7,"#b8e186"],[0.8,"#7fbc41"],[0.9,"#4d9221"],[1,"#276419"]]},"xaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"yaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"scene":{"xaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"yaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"zaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2}},"shapedefaults":{"line":{"color":"#2a3f5f"}},"annotationdefaults":{"arrowcolor":"#2a3f5f","arrowhead":0,"arrowwidth":1},"geo":{"bgcolor":"white","landcolor":"#E5ECF6","subunitcolor":"white","showland":true,"showlakes":true,"lakecolor":"white"},"title":{"x":0.05},"mapbox":{"style":"light"}}},"xaxis":{"gridcolor":"#334155","title":{"text":"A\u00f1o"}},"yaxis":{"gridcolor":"#334155","ticksuffix":"%","range":[0,101],"title":{"text":"% de muestras"}},"legend":{"font":{"color":"#94A3B8"},"bgcolor":"rgba(0,0,0,0)","orientation":"h","yanchor":"bottom","y":1.02,"xanchor":"right","x":1},"font":{"color":"#CBD5E1"},"margin":{"t":50,"b":40,"l":10,"r":10},"barmode":"stack","title":{"text":"Riesgo bacteriol\u00f3gico por a\u00f1o"},"height":380,"paper_bgcolor":"rgba(0,0,0,0)","plot_bgcolor":"rgba(0,0,0,0)"},                        {"responsive": true, "displayModeBar": false}                    )                };            </script>        </div></div>
+        <div class="col-12 col-md-5"><div id="chart-muni" style="min-height:320px"></div></div>
+      </div>
+    </div>
+
+    <div class="tab-pane fade" id="tab-abastecimiento" role="tabpanel">
+      <div class="row g-3 mb-3">
+        <div class="col-12 col-md-7"><div id="chart-supply-risk" style="min-height:280px"></div></div>
+        <div class="col-12 col-md-5"><div id="chart-supply-donut" style="min-height:360px"></div></div>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-md-6"><div>                            <div id="chart-ecoli" class="plotly-graph-div" style="height:320px; width:100%;"></div>            <script>                window.PLOTLYENV=window.PLOTLYENV || {};                                if (document.getElementById("chart-ecoli")) {                    Plotly.newPlot(                        "chart-ecoli",                        [{"marker":{"color":"#E84855"},"nbinsx":40,"opacity":0.8,"x":[100.0,0.0,1.2,100.0,1.5,0.0,100.0,100.0,13.6,0.0,48.3,1.5,0.0,0.0,0.0,5.2,0.0,0.0,0.0,0.0,4.7,0.0,0.0,0.0,100.0,0.0,100.0,0.0,1.5,100.0,0.0,0.0,0.0,0.0,0.0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,100.0,1.1,100.0,100.0,0.0,0.0,13.6,0.0,83.1,58.8,124.7,82.0,0.0,100.0,0.0,0.0,100.0,0.0,100.0,13.6,0.0,2.6,100.0,0.0,0.0,0.0,0.0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,48.3,0.0,0.0,100.0,100.0,4.7,0.0,0.0,100.0,0.0,0.0,0.0,0.0,0.0,14.5,0.0,0.0,0.0,100.0,0.0,32.6,0.0,5.4,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,100.0,0.0,13.6,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,100.0,0.0,0.0,0.0,0.0,0.0,100.0,100.0,100.0,0.0,0.0,0.0,0.0,100.0,4.7,0.0,0.0,0.0,0.0,0.0,0.0,100.0,0.0,100.0,0.0,0.0,0.0,3.4,3.4,3.4,100.0,5.4,1.1,0.0,0.0,0.0,0.0,3.2,0.0,0.0,100.0,5.2,100.0,100.0,0.0,0.0,0.0,100.0,13.6,0.0,2.0,0.0,0.0,83.1,0.0,78.2,2.4,0.0,1.0,0.0,0.0,0.0,100.0,100.0,0.0,100.0,0.0,100.0,1.1,2.6,100.0,0.0,0.0,0.0,100.0,13.6,0.0,48.3,100.0,0.0,100.0,0.0,48.3,0.0,0.0,0.0,32.6,0.0,100.0,0.0,100.0,100.0,100.0,0.0,13.2,100.0,16.6,2.8,100.0,0.0,0.0,13.5,83.6,13.5,97.8,28.8,13.7,0.0,0.0,100.0,100.0,0.0,1.5,100.0,0.0,0.0,0.0,100.0,0.0,0.0,0.0,0.0,0.0,100.0,0.0,2.87,0.0,100.0,39.5,0.0,100.0,0.0,0.0,100.0,4.7,5.4,0.0,9.6,0.0,0.0,48.3,0.0,1.0,100.0,100.0,0.0,100.0,0.0,100.0,0.0,0.0,48.3,17.8,17.8,12.4,0.0,0.0,0.0,3.0,4.7,100.0,100.0,0.0,100.0,0.0,100.0,48.3,1.5,4.7,1.5,2.6,1.2,0.0,1.2,0.0,0.0,100.0,48.3,48.3,0.0,100.0,100.0,100.0,100.0,100.0,48.3,0.0,13.6,100.0,4.7,13.6,0.0,100.0,48.3,4.7,100.0,0.0,1.1,100.0,17.1,0.0,100.0,100.0,100.0,100.0,0.0,2.1,1.2,100.0,100.0,5.4,48.3,48.3,100.0,13.6,0.0,0.0,5.6,4.74,100.0,0.0,0.0,100.0,22.75,48.3,0.0,0.0,100.0,100.0,100.0,100.0,0.0,101.0,0.0,17.1,100.0,0.0,48.3,101.0,0.0,1.5,13.6,0.0,48.3,0.0,101.0,0.0,101.0,13.6,101.0,4.7,101.0,5.8,5.8,5.4,101.0,0.0,0.0,101.0,1.5,101.0,101.0,101.0,101.0,7.5,1.5,100.0,0.0,13.6,100.0,100.0,100.0,100.0,100.0,0.0,0.0,1.0,3.1,0.0,3.1,2.0,0.0,0.0,0.0,0.0,0.0,0.0,65.9,3.1,0.0,0.0,0.0,0.0,0.0,36.4,0.0,0.0,1.0,88.5,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,56.0,0.0,101.0,0.0,0.0,1.0,100.0,0.0,0.0,0.0,101.0,1.0,0.0,0.0,3.1,4.2,2.0,1.2,1.5,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,2.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,5.3,11.1,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,100.0,45.9,27.1,0.0,0.0,0.5,100.0,40.6,0.0,0.5,0.5,0.5,0.5,5.3,100.0,13.6,0.0,0.0,4.2,0.0,0.0,100.0,100.0,100.0,0.0,0.0,1.1,1.1,100.0,100.0,100.0,100.0,100.0,100.0,0.0,5.2,5.4,2.6,0.0,0.0,0.0,48.3,62.4,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,50.4,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,6.4,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,2.3,0.5,0.0,0.0,0.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.0,3.1,4.2,4.2,8.7,15.0,17.8,38.4,65.9,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.0,48.3,100.0,0.0,0.0,0.0,0.0,100.0,100.0,101.0,101.0,2.6,48.3,13.6,101.0,8.4,0.0,101.0,101.0,1.5,101.0,4.7,4.7,5.8,1.2,4.7,0.0,101.0,101.0,101.0,48.3,9.6,101.0,0.0,0.0,0.0,13.6,9.6,1.5,4.7,13.6,101.0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,2.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,100.0,0.0,100.0,100.0,48.3,100.0,100.0,100.0,100.0,0.0,100.0,101.0,0.0,100.0,100.0,0.0,0.0,0.0,0.0,13.6,0.0,0.0,0.0,0.0,100.0,101.0,100.0,1.1,1.2,100.0,100.0,17.2,0.0,0.0,100.0,100.0,100.0,0.0,100.0,0.0,100.0,100.0,3.2,100.0,100.0,100.0,100.0,100.0,2.1,100.0,48.3,100.0,100.0,100.0,100.0,0.0,13.5,4.7,0.0,0.0,13.6,0.0,0.0,0.0,48.3,47.8,0.0,15.0,1.0,0.0,0.0,0.0,0.0,3.4,0.0,2.0,0.0,2.6,3.2,8.4,2.1,0.0,0.0,0.0,13.6,2.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,48.3,5.6,13.6,4.7,1.1,1.1,48.3,48.3,13.6,2.0,1.0,48.3,3.4,2.0,47.8,2.0,118.4,13.7,8.7,1.0,15.0,3.1,100.0,48.3,32.6,0.0,0.0,100.0,100.0,1.0,100.0,1.0,100.0,100.0,100.0,100.0,100.0,100.0,1.0,1.0,1.0,1.0,100.0,1.0,100.0,1.0,100.0,1.0,1.0,1.0,100.0,100.0,1.0,1.0,1.0,1.0,1.0,1.0,13.6,4.7,1.0,100.0,1.0,4.7,13.6,1.0,1.0,100.0,0.0,0.0,1.0,1.0,100.0,1.0,13.6,1.0,100.0,1.0,1.0,1.5,100.0,1.0,1.5,2.6,1.0,1.5,13.6,4.7,100.0,13.6,100.0,100.0,100.0,1.0,1.0,1.0,0.0,100.0,100.0,13.6,48.3,100.0,100.0,100.0,100.0,5.2,1.5,48.3,48.3,100.0,13.6,100.0,32.6,100.0,100.0,13.6,1.5,17.1,48.3,13.6,32.6,0.0,100.0,100.0,48.3,48.3,13.6,100.0,100.0,9.1,100.0,100.0,17.1,100.0,13.6,10.0,100.0,100.0,48.3,1.0,100.0,17.1,1.0,1.5,100.0,13.6,1.1,100.0,100.0,100.0,100.0,9.6,1.0,100.0,32.6,1.1,48.3,48.3,1.0,5.2,1.0,13.6,48.3],"type":"histogram"}],                        {"template":{"data":{"histogram2dcontour":[{"type":"histogram2dcontour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"choropleth":[{"type":"choropleth","colorbar":{"outlinewidth":0,"ticks":""}}],"histogram2d":[{"type":"histogram2d","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"heatmap":[{"type":"heatmap","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"contourcarpet":[{"type":"contourcarpet","colorbar":{"outlinewidth":0,"ticks":""}}],"contour":[{"type":"contour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"surface":[{"type":"surface","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"mesh3d":[{"type":"mesh3d","colorbar":{"outlinewidth":0,"ticks":""}}],"scatter":[{"fillpattern":{"fillmode":"overlay","size":10,"solidity":0.2},"type":"scatter"}],"parcoords":[{"type":"parcoords","line":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolargl":[{"type":"scatterpolargl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"bar":[{"error_x":{"color":"#2a3f5f"},"error_y":{"color":"#2a3f5f"},"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"bar"}],"scattergeo":[{"type":"scattergeo","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolar":[{"type":"scatterpolar","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"histogram":[{"marker":{"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"histogram"}],"scattergl":[{"type":"scattergl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatter3d":[{"type":"scatter3d","line":{"colorbar":{"outlinewidth":0,"ticks":""}},"marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermap":[{"type":"scattermap","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermapbox":[{"type":"scattermapbox","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterternary":[{"type":"scatterternary","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattercarpet":[{"type":"scattercarpet","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"carpet":[{"aaxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"baxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"type":"carpet"}],"table":[{"cells":{"fill":{"color":"#EBF0F8"},"line":{"color":"white"}},"header":{"fill":{"color":"#C8D4E3"},"line":{"color":"white"}},"type":"table"}],"barpolar":[{"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"barpolar"}],"pie":[{"automargin":true,"type":"pie"}]},"layout":{"autotypenumbers":"strict","colorway":["#636efa","#EF553B","#00cc96","#ab63fa","#FFA15A","#19d3f3","#FF6692","#B6E880","#FF97FF","#FECB52"],"font":{"color":"#2a3f5f"},"hovermode":"closest","hoverlabel":{"align":"left"},"paper_bgcolor":"white","plot_bgcolor":"#E5ECF6","polar":{"bgcolor":"#E5ECF6","angularaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"radialaxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"ternary":{"bgcolor":"#E5ECF6","aaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"baxis":{"gridcolor":"white","linecolor":"white","ticks":""},"caxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"coloraxis":{"colorbar":{"outlinewidth":0,"ticks":""}},"colorscale":{"sequential":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"sequentialminus":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"diverging":[[0,"#8e0152"],[0.1,"#c51b7d"],[0.2,"#de77ae"],[0.3,"#f1b6da"],[0.4,"#fde0ef"],[0.5,"#f7f7f7"],[0.6,"#e6f5d0"],[0.7,"#b8e186"],[0.8,"#7fbc41"],[0.9,"#4d9221"],[1,"#276419"]]},"xaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"yaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"scene":{"xaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"yaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"zaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2}},"shapedefaults":{"line":{"color":"#2a3f5f"}},"annotationdefaults":{"arrowcolor":"#2a3f5f","arrowhead":0,"arrowwidth":1},"geo":{"bgcolor":"white","landcolor":"#E5ECF6","subunitcolor":"white","showland":true,"showlakes":true,"lakecolor":"white"},"title":{"x":0.05},"mapbox":{"style":"light"}}},"shapes":[{"line":{"color":"#3BB273","dash":"dash","width":2},"type":"line","x0":0,"x1":0,"xref":"x","y0":0,"y1":1,"yref":"y domain"}],"xaxis":{"gridcolor":"#334155","title":{"text":"E. coli (UFC\u002f100mL)"}},"yaxis":{"gridcolor":"#334155","title":{"text":"Muestras"}},"font":{"color":"#CBD5E1"},"margin":{"t":40,"b":40,"l":10,"r":10},"title":{"text":"Distribuci\u00f3n de E. coli (UFC\u002f100mL)"},"height":320,"paper_bgcolor":"rgba(0,0,0,0)","plot_bgcolor":"rgba(0,0,0,0)"},                        {"responsive": true, "displayModeBar": false}                    )                };            </script>        </div></div>
+        <div class="col-12 col-md-6">
+          <div class="info-card">
+            <p style="color:#F8FAFC;font-weight:600;margin-bottom:8px;">Nota metodológica</p>
+            <p style="color:#94A3B8;font-size:13px;line-height:1.6;margin:0;">
+              <strong style="color:#CBD5E1;">SAE</strong> = Sistema de Agua de Escuela
+              (red de distribución intraescolar).<br>
+              <strong style="color:#CBD5E1;">SCALL</strong> = Sistema Comunitario de Agua de Lluvia.<br><br>
+              El umbral de riesgo bacteriológico sigue la clasificación del IMTA:
+              <span style="color:#3BB273;">Bajo riesgo</span> (&lt;1 UFC E. coli/100mL),
+              <span style="color:#F4A261;">Intermedio</span> (1–10 UFC) y
+              <span style="color:#E84855;">Alto riesgo</span> (&gt;10 UFC).
+              La gráfica de distribución excluye valores atípicos por encima de 200 UFC.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+        crossorigin="anonymous"></script>
+<script>
+const YEAR_DATA = {"__all__":{"kpi":{"n":4653,"alto":79.9,"bajo":14.8,"munis":308},"muni":{"munis":["San Cristóbal de las Casas","Pantelho","Sitalá","Berriozabal","La Trinitaria","Chenalhó","San Juan Cancuc","Berriozábal","Tenejapa","San Juan Chamula","Chiapilla","Teopisca"],"pcts":[96.6,90.0,57.9,53.8,40.5,39.8,33.3,23.8,22.4,16.0,6.9,2.1],"ns":[3037,20,171,39,42,171,75,21,58,25,29,94]},"supply":{"supplies":["SAE","Manantial","Río","Pozo","SCALL","Otro","Lluvia"],"pcts":[87.2,67.1,66.7,37.7,34.1,18.8,14.0],"ns":[3641,155,9,53,44,69,50]},"donut":{"labels":["SAE","Manantial","SCALL","Otro","Pozo","Lluvia","Río"],"values":[3767,268,159,100,81,56,25]}},"2014":{"kpi":{"n":360,"alto":41.2,"bajo":45.9,"munis":241},"muni":{"munis":[],"pcts":[],"ns":[]},"supply":{"supplies":["Manantial","Pozo","SAE","Río"],"pcts":[57.1,50.0,40.5,0.0],"ns":[7,4,326,1]},"donut":{"labels":["SAE","Manantial","Pozo","Río"],"values":[343,8,4,1]}},"2015":{"kpi":{"n":11,"alto":63.6,"bajo":27.3,"munis":5},"muni":{"munis":[],"pcts":[],"ns":[]},"supply":{"supplies":["Manantial","SAE"],"pcts":[100.0,71.4],"ns":[2,7]},"donut":{"labels":["SAE","Manantial"],"values":[7,2]}},"2016":{"kpi":{"n":65,"alto":48.3,"bajo":22.4,"munis":15},"muni":{"munis":[],"pcts":[],"ns":[]},"supply":{"supplies":["Manantial","SAE","Pozo","Otro"],"pcts":[88.9,46.2,16.7,0.0],"ns":[9,39,6,2]},"donut":{"labels":["SAE","Manantial","Pozo","Otro"],"values":[43,11,7,2]}},"2017":{"kpi":{"n":1033,"alto":99.2,"bajo":0.5,"munis":9},"muni":{"munis":["San Cristóbal de las Casas"],"pcts":[100.0],"ns":[1015]},"supply":{"supplies":["SAE","Pozo","Lluvia"],"pcts":[99.4,50.0,0.0],"ns":[1027,2,1]},"donut":{"labels":["SAE","Pozo","Lluvia"],"values":[1029,2,1]}},"2018":{"kpi":{"n":1952,"alto":99.1,"bajo":0.4,"munis":25},"muni":{"munis":["San Cristóbal de las Casas"],"pcts":[100.0],"ns":[1915]},"supply":{"supplies":["Manantial","Río","SAE","Pozo"],"pcts":[100.0,100.0,99.6,33.3],"ns":[1,3,1933,3]},"donut":{"labels":["SAE","Río","Pozo","Manantial"],"values":[1934,3,3,1]}},"2019":{"kpi":{"n":282,"alto":14.0,"bajo":73.2,"munis":17},"muni":{"munis":["San Juan Cancuc","Chiapilla","Teopisca","San Cristóbal de las Casas"],"pcts":[28.6,7.1,0.0,0.0],"ns":[21,28,76,70]},"supply":{"supplies":["Manantial","Otro","Pozo","SAE"],"pcts":[60.0,40.0,20.0,14.4],"ns":[15,5,10,153]},"donut":{"labels":["SAE","Manantial","Pozo","Otro"],"values":[159,15,10,6]}},"2020":{"kpi":{"n":186,"alto":40.2,"bajo":30.7,"munis":11},"muni":{"munis":["Sitalá","Chenalhó"],"pcts":[89.5,26.0],"ns":[38,77]},"supply":{"supplies":["Otro","Manantial","Río","SAE","Pozo"],"pcts":[75.0,69.2,50.0,30.0,20.0],"ns":[4,39,2,110,5]},"donut":{"labels":["SAE","Manantial","Pozo","Otro","Río"],"values":[116,39,5,4,2]}},"2021":{"kpi":{"n":62,"alto":63.3,"bajo":25.0,"munis":10},"muni":{"munis":["Sitalá"],"pcts":[77.8],"ns":[27]},"supply":{"supplies":["Pozo","Manantial","SAE","Otro"],"pcts":[100.0,93.3,54.3,33.3],"ns":[3,15,35,6]},"donut":{"labels":["SAE","Manantial","Otro","Pozo"],"values":[36,16,6,3]}},"2022":{"kpi":{"n":129,"alto":8.0,"bajo":73.2,"munis":23},"muni":{"munis":["Sitalá","San Cristóbal de las Casas"],"pcts":[10.0,3.1],"ns":[20,32]},"supply":{"supplies":["Lluvia","Otro"],"pcts":[14.3,6.4],"ns":[42,47]},"donut":{"labels":["Otro","Lluvia","SCALL","SAE","Río"],"values":[52,42,5,4,2]}},"2023":{"kpi":{"n":199,"alto":15.7,"bajo":78.4,"munis":31},"muni":{"munis":[],"pcts":[],"ns":[]},"supply":{"supplies":["Otro","Lluvia","Pozo"],"pcts":[66.7,14.3,0.0],"ns":[3,7,2]},"donut":{"labels":["Manantial","SCALL","SAE","Otro","Lluvia","Pozo","Río"],"values":[71,29,16,16,13,8,7]}},"2024":{"kpi":{"n":203,"alto":46.0,"bajo":44.0,"munis":40},"muni":{"munis":[],"pcts":[],"ns":[]},"supply":{"supplies":["Río","Manantial","Pozo","SCALL","SAE"],"pcts":[100.0,70.0,50.0,28.6,0.0],"ns":[2,20,6,14,8]},"donut":{"labels":["SCALL","SAE","Manantial","Pozo","Otro","Río"],"values":[62,52,50,24,8,7]}},"2025":{"kpi":{"n":147,"alto":45.6,"bajo":25.3,"munis":20},"muni":{"munis":["Chenalhó","Berriozabal"],"pcts":[60.9,45.0],"ns":[23,20]},"supply":{"supplies":["Manantial","Pozo","Otro","SCALL","SAE","Río"],"pcts":[51.4,50.0,50.0,37.5,33.3,0.0],"ns":[37,12,2,24,3,1]},"donut":{"labels":["SCALL","Manantial","SAE","Pozo","Otro","Río"],"values":[55,41,28,14,6,3]}},"2026":{"kpi":{"n":21,"alto":50.0,"bajo":25.0,"munis":3},"muni":{"munis":[],"pcts":[],"ns":[]},"supply":{"supplies":["Manantial","SCALL"],"pcts":[60.0,33.3],"ns":[10,6]},"donut":{"labels":["Manantial","SCALL"],"values":[14,7]}}};
+
+const CFG   = {responsive: true, displayModeBar: false};
+const RED   = "#E84855";
+const ORANGE= "#F4A261";
+const GREEN = "#3BB273";
+const BASE_LAYOUT = {
+    paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+    font: {color: "#CBD5E1"},
+    margin: {t:40, b:40, l:10, r:120},
+};
+
+function riskColor(pct) {
+    return pct >= 60 ? RED : pct >= 30 ? ORANGE : GREEN;
+}
+
+function updateCharts(key) {
+    const D = YEAR_DATA[key];
+    if (!D) return;
+
+    // KPIs
+    document.getElementById("kpi-n").textContent    = D.kpi.n.toLocaleString("es-MX");
+    document.getElementById("kpi-alto").textContent = D.kpi.alto + "%";
+    document.getElementById("kpi-bajo").textContent = D.kpi.bajo + "%";
+    document.getElementById("kpi-munis").textContent= D.kpi.munis.toLocaleString("es-MX");
+
+    // Municipality risk bar
+    const muniColors = D.muni.pcts.map(riskColor);
+    const muniHeight = Math.max(320, D.muni.munis.length * 32 + 80);
+    Plotly.newPlot("chart-muni", [{
+        type: "bar", orientation: "h",
+        x: D.muni.pcts, y: D.muni.munis,
+        marker: {color: muniColors},
+        text: D.muni.pcts.map((p, i) => p.toFixed(0) + "%  (n=" + D.muni.ns[i] + ")"),
+        textposition: "outside",
+        hovertemplate: "<b>%{y}</b><br>Alto riesgo: %{x:.1f}%<extra></extra>",
+    }], Object.assign({}, BASE_LAYOUT, {
+        title: {text: "% Alto riesgo por municipio (mín. 20 muestras)"},
+        height: muniHeight,
+        xaxis: {range:[0,115], gridcolor:"#334155", ticksuffix:"%"},
+        yaxis: {gridcolor:"rgba(0,0,0,0)", autorange:"reversed"},
+    }), CFG);
+
+    // Supply risk bar
+    const supplyColors = D.supply.pcts.map(riskColor);
+    const supplyHeight = Math.max(280, D.supply.supplies.length * 40 + 80);
+    Plotly.newPlot("chart-supply-risk", [{
+        type: "bar", orientation: "h",
+        x: D.supply.pcts, y: D.supply.supplies,
+        marker: {color: supplyColors},
+        text: D.supply.pcts.map((p, i) => p.toFixed(0) + "%  (n=" + D.supply.ns[i] + ")"),
+        textposition: "outside",
+        hovertemplate: "<b>%{y}</b><br>Alto riesgo: %{x:.1f}%<extra></extra>",
+    }], Object.assign({}, BASE_LAYOUT, {
+        title: {text: "% Alto riesgo por tipo de abastecimiento"},
+        height: supplyHeight,
+        xaxis: {range:[0,115], gridcolor:"#334155", ticksuffix:"%"},
+        yaxis: {gridcolor:"rgba(0,0,0,0)", autorange:"reversed"},
+    }), CFG);
+
+    // Supply donut
+    Plotly.newPlot("chart-supply-donut", [{
+        type: "pie", hole: 0.5,
+        labels: D.donut.labels, values: D.donut.values,
+        textinfo: "label+percent",
+        marker: {colors: ["#2E86AB", "#3BB273", "#F4A261", "#E84855", "#94A3B8", "#CBD5E1", "#64748B"]},
+    }], Object.assign({}, BASE_LAYOUT, {
+        title: {text: "Distribución por tipo de abastecimiento"},
+        height: 360,
+        showlegend: false,
+        margin: {t:40, b:40, l:10, r:10},
+    }), CFG);
+}
+
+function applyWhenReady(key, attempt) {
+    attempt = attempt || 0;
+    if (attempt > 120) { updateCharts(key); return; }
+    const el = document.getElementById("chart-trend");
+    if (el && el.querySelector("svg.main-svg")) {
+        updateCharts(key);
+    } else {
+        setTimeout(() => applyWhenReady(key, attempt + 1), 80);
+    }
+}
+
+document.getElementById("year-select").addEventListener("change", function () {
+    const url = new URL(window.location.href);
+    url.searchParams.set("year", this.value);
+    window.location.href = url.toString();
+});
+
+document.getElementById("clear-filter").addEventListener("click", function () {
+    window.location.href = window.location.pathname.split("?")[0];
+});
+
+document.querySelectorAll("button[data-bs-toggle='tab']").forEach(btn => {
+    btn.addEventListener("shown.bs.tab", () => window.dispatchEvent(new Event("resize")));
+});
+
+window.addEventListener("load", function () {
+    const year = new URLSearchParams(window.location.search).get("year") || "__all__";
+    if (year !== "__all__") {
+        document.getElementById("year-select").value = year;
+        document.getElementById("filter-notice").style.display = "flex";
+        document.getElementById("filter-badge").textContent = year;
+    }
+    const hash = window.location.hash;
+    if (hash) {
+        const btn = document.querySelector("button[data-bs-target='" + hash + "']");
+        if (btn) bootstrap.Tab.getOrCreateInstance(btn).show();
+    }
+    applyWhenReady(year);
+});
+
+document.querySelectorAll("button[data-bs-toggle='tab']").forEach(btn => {
+    btn.addEventListener("shown.bs.tab", function () {
+        history.replaceState(null, "", window.location.search + this.dataset.bsTarget);
+    });
+});
+
+</script>
+</body>
+</html>
