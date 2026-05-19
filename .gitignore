@@ -1,0 +1,7 @@
+__pycache__
+uv.lock
+.playwright
+.claude/skills/playwright-cli/
+data/*.csv
+data/*.xlsx
+data/*.xls

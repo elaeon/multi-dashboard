@@ -212,6 +212,70 @@ def fig_sellers(d: pl.DataFrame) -> go.Figure:
     return fig
 
 
+def fig_crisis_trend(d: pl.DataFrame) -> go.Figure:
+    d_valid = d.filter(pl.col("ciclo_escolar").is_not_null())
+
+    # bebederos and comite per ciclo
+    agg_bc = (
+        d_valid.group_by("ciclo_escolar")
+        .agg(
+            pl.col("bebederos").mean().alias("bebederos"),
+            pl.col("comite").mean().alias("comite"),
+        )
+        .sort("ciclo_escolar")
+    )
+
+    # triple problem: chatarra=1 AND bebederos=0 AND comite=0
+    agg_triple = (
+        d_valid.filter(
+            pl.col("chatarra").is_not_null() &
+            pl.col("bebederos").is_not_null() &
+            pl.col("comite").is_not_null()
+        )
+        .group_by("ciclo_escolar")
+        .agg(
+            ((pl.col("chatarra") == 1) & (pl.col("bebederos") == 0) & (pl.col("comite") == 0))
+            .mean().alias("triple")
+        )
+        .sort("ciclo_escolar")
+    )
+
+    agg = agg_bc.join(agg_triple, on="ciclo_escolar", how="left").sort("ciclo_escolar")
+    ciclos = agg["ciclo_escolar"].to_list()
+
+    def to_pct(col):
+        return [round(v * 100, 1) if v is not None else None for v in agg[col].to_list()]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=ciclos, y=to_pct("triple"),
+        mode="lines+markers", name="Triple problema (chatarra + sin agua + sin comité)",
+        line=dict(color="#E84855", width=3),
+        fill="tozeroy", fillcolor="rgba(232,72,85,0.07)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=ciclos, y=to_pct("bebederos"),
+        mode="lines+markers", name="Bebederos de agua funcionando",
+        line=dict(color="#2E86AB", width=2, dash="dot"),
+    ))
+    fig.add_trace(go.Scatter(
+        x=ciclos, y=to_pct("comite"),
+        mode="lines+markers", name="Comité de vigilancia activo",
+        line=dict(color="#F4A261", width=2, dash="dot"),
+    ))
+    fig.update_layout(
+        title="Crisis estructural: triple problema, agua y vigilancia por ciclo escolar",
+        height=460,
+        xaxis=dict(gridcolor="#334155"),
+        yaxis=dict(gridcolor="#334155", ticksuffix="%", range=[0, 105]),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font_color="#94A3B8", orientation="h",
+                    yanchor="top", y=-0.18, xanchor="center", x=0.5),
+        margin=dict(t=50, b=100, l=10, r=10),
+        **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
+    )
+    return fig
+
+
 def fig_roles(d: pl.DataFrame) -> go.Figure:
     counts = d.filter(pl.col("rol").is_not_null())["rol"].value_counts().sort("count", descending=True)
     fig = go.Figure(go.Pie(
@@ -231,6 +295,12 @@ def fig_roles(d: pl.DataFrame) -> go.Figure:
 
 
 # ── Layout ────────────────────────────────────────────────────────────────────
+
+TAB_STYLE = {"backgroundColor": "#0F172A", "color": "#94A3B8", "borderTop": "none",
+             "borderBottom": "1px solid #334155", "padding": "10px 18px"}
+TAB_SEL   = {"backgroundColor": "#1E293B", "color": "#F8FAFC",
+             "borderTop": "2px solid #2E86AB", "borderBottom": "none",
+             "fontWeight": "600", "padding": "10px 18px"}
 
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], title="Entorno Alimentario Escuelas")
 
@@ -268,19 +338,48 @@ app.layout = html.Div(style={"backgroundColor": "#0F172A", "minHeight": "100vh",
     # KPI row
     dbc.Row(id="kpi-row", className="g-3", style={"marginBottom": "20px"}),
 
-    # Charts row 1
-    dbc.Row(className="g-3", style={"marginBottom": "20px"}, children=[
-        dbc.Col(dcc.Graph(id="graph-panorama"), md=6),
-        dbc.Col(dcc.Graph(id="graph-trend"), md=6),
-    ]),
+    # Tabs
+    dcc.Tabs(style={"marginBottom": "0"}, children=[
 
-    # Charts row 2
-    dbc.Row(className="g-3", children=[
-        dbc.Col(dcc.Graph(id="graph-states"), md=6),
-        dbc.Col([
-            dcc.Graph(id="graph-sellers"),
-            dcc.Graph(id="graph-roles"),
-        ], md=6),
+        dcc.Tab(label="Panorama General", style=TAB_STYLE, selected_style=TAB_SEL, children=[
+            html.Div(style={"paddingTop": "20px"}, children=[
+                dbc.Row(className="g-3", style={"marginBottom": "20px"}, children=[
+                    dbc.Col(dcc.Graph(id="graph-panorama"), md=6),
+                    dbc.Col(dcc.Graph(id="graph-trend"), md=6),
+                ]),
+                dbc.Row(className="g-3", children=[
+                    dbc.Col(dcc.Graph(id="graph-states"), md=6),
+                    dbc.Col([
+                        dcc.Graph(id="graph-sellers"),
+                        dcc.Graph(id="graph-roles"),
+                    ], md=6),
+                ]),
+            ]),
+        ]),
+
+        dcc.Tab(label="Crisis Estructural", style=TAB_STYLE, selected_style=TAB_SEL, children=[
+            html.Div(style={"paddingTop": "20px"}, children=[
+                html.Div(style={
+                    "background": "#1E293B", "border": "1px solid #E84855",
+                    "borderRadius": "8px", "padding": "14px 18px", "marginBottom": "20px",
+                }, children=[
+                    html.P([
+                        html.Strong("Tres indicadores que muestran el deterioro del entorno alimentario escolar. ",
+                                    style={"color": "#F8FAFC"}),
+                        html.Span(
+                            "El triple problema agrupa escuelas con venta de comida chatarra, "
+                            "sin bebederos de agua funcionando y sin comité de vigilancia activo — simultáneamente. "
+                            "Responde al filtro de rol del encuestado; siempre muestra todos los ciclos.",
+                            style={"color": "#94A3B8", "fontSize": "13px"},
+                        ),
+                    ], style={"margin": 0}),
+                ]),
+                dbc.Row(className="g-3", children=[
+                    dbc.Col(dcc.Graph(id="graph-crisis"), md=12),
+                ]),
+            ]),
+        ]),
+
     ]),
 ])
 
@@ -321,6 +420,15 @@ def update_all(ciclo: str, rol: str):
         fig_sellers(d),
         fig_roles(d),
     )
+
+
+@app.callback(
+    Output("graph-crisis", "figure"),
+    Input("rol-filter", "value"),
+)
+def update_crisis(rol: str):
+    d = df if rol == "all" else df.filter(pl.col("rol") == rol)
+    return fig_crisis_trend(d)
 
 
 if __name__ == "__main__":
