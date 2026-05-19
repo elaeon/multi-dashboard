@@ -2,6 +2,7 @@ import json
 import polars as pl
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from dash import Dash, dcc, html, Input, Output
 import dash_bootstrap_components as dbc
 
@@ -29,6 +30,36 @@ STATE_ISO = {
     'Yucatán': 'MX-YUC', 'Zacatecas': 'MX-ZAC',
 }
 
+DELITOS_CLAVE = [
+    'Homicidio doloso', 'Feminicidio', 'Secuestro', 'Extorsión',
+    'Lesiones dolosas', 'Abuso sexual', 'Violencia familiar', 'Narcomenudeo',
+    'Robo a negocio', 'Robo a casa habitación',
+    'Robo de vehículo automotor', 'Robo en transporte público colectivo',
+]
+
+# Maps each row to one of the 12 headline crime labels (null if not in list)
+_DELITO_CLAVE_EXPR = (
+    pl.when(pl.col('Subtipo de delito') == 'Homicidio doloso').then(pl.lit('Homicidio doloso'))
+    .when(pl.col('Subtipo de delito') == 'Feminicidio').then(pl.lit('Feminicidio'))
+    .when(pl.col('Tipo de delito') == 'Secuestro').then(pl.lit('Secuestro'))
+    .when(pl.col('Tipo de delito') == 'Extorsión').then(pl.lit('Extorsión'))
+    .when(pl.col('Subtipo de delito') == 'Lesiones dolosas').then(pl.lit('Lesiones dolosas'))
+    .when(pl.col('Subtipo de delito') == 'Abuso sexual').then(pl.lit('Abuso sexual'))
+    .when(pl.col('Subtipo de delito') == 'Violencia familiar').then(pl.lit('Violencia familiar'))
+    .when(pl.col('Tipo de delito') == 'Narcomenudeo').then(pl.lit('Narcomenudeo'))
+    .when(pl.col('Subtipo de delito') == 'Robo a negocio').then(pl.lit('Robo a negocio'))
+    .when(pl.col('Subtipo de delito') == 'Robo a casa habitación').then(pl.lit('Robo a casa habitación'))
+    .when(pl.col('Subtipo de delito').str.starts_with('Robo de vehículo automotor')).then(pl.lit('Robo de vehículo automotor'))
+    .when(pl.col('Subtipo de delito') == 'Robo en transporte público colectivo').then(pl.lit('Robo en transporte público colectivo'))
+    .otherwise(pl.lit(None))
+    .alias('Delito_Clave')
+)
+
+MES_NUM = {m: i + 1 for i, m in enumerate(
+    ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+     'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+)}
+
 BIEN_COLORS = {
     'El patrimonio': ('46,134,171', '#2E86AB'),
     'La vida y la Integridad corporal': ('232,72,85', '#E84855'),
@@ -41,9 +72,12 @@ BIEN_COLORS = {
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
+# lf_raw is reused by both the yearly and monthly aggregation paths
+lf_raw = pl.scan_parquet("data/incidencia_delictiva_fuero_comun.parquet")
+
 # sum_horizontal stays at 2.8M rows instead of unpivot's 33M — far less memory
 lf = (
-    pl.scan_parquet("data/incidencia_delictiva_fuero_comun.parquet")
+    lf_raw
     .with_columns(
         pl.sum_horizontal(*[pl.col(m).fill_null(0) for m in MONTHS]).alias('Casos')
     )
@@ -54,12 +88,33 @@ q_yr_bien    = lf.group_by(['Año', 'Bien jurídico afectado']).agg(pl.col('Caso
 q_yr_tipo    = lf.group_by(['Año', 'Tipo de delito', 'Bien jurídico afectado']).agg(pl.col('Casos').sum())
 q_yr_ent_tipo = lf.group_by(['Año', 'Entidad', 'Clave_Ent', 'Tipo de delito']).agg(pl.col('Casos').sum())
 
-agg_yr_bien, agg_yr_tipo, agg_yr_ent_tipo = pl.collect_all([q_yr_bien, q_yr_tipo, q_yr_ent_tipo])
+# Monthly aggregation for 12 headline crimes by state — ~55k rows after unpivot, still small
+q_monthly = (
+    lf_raw
+    .with_columns(_DELITO_CLAVE_EXPR)
+    .filter(pl.col('Delito_Clave').is_not_null())
+    .group_by(['Año', 'Entidad', 'Delito_Clave'])
+    .agg([pl.col(m).sum().alias(m) for m in MONTHS])
+)
+
+agg_yr_bien, agg_yr_tipo, agg_yr_ent_tipo, agg_monthly = pl.collect_all(
+    [q_yr_bien, q_yr_tipo, q_yr_ent_tipo, q_monthly]
+)
 agg_yr_ent = agg_yr_ent_tipo.group_by(['Año', 'Entidad', 'Clave_Ent']).agg(pl.col('Casos').sum())
+
+# Unpivot the collected frame — safe since it's already aggregated
+# cast MesNum to Int32 so sort is numeric, not lexicographic
+agg_monthly_long = (
+    agg_monthly
+    .unpivot(on=MONTHS, index=['Año', 'Entidad', 'Delito_Clave'], variable_name='Mes', value_name='Casos')
+    .with_columns(pl.col('Mes').replace(MES_NUM).cast(pl.Int32).alias('MesNum'))
+    .sort(['Delito_Clave', 'Entidad', 'Año', 'MesNum'])
+)
 
 TIPOS = ['Todos los delitos'] + sorted(agg_yr_tipo['Tipo de delito'].unique().to_list())
 AÑOS = sorted(agg_yr_tipo['Año'].cast(pl.Int32).unique().to_list())
 MIN_AÑO, MAX_AÑO = AÑOS[0], AÑOS[-1]
+ESTADOS = ['Nacional'] + sorted(agg_monthly_long['Entidad'].unique().to_list())
 
 with open("data/mexico_states.geojson") as _f:
     GEO = json.load(_f)
@@ -213,6 +268,76 @@ def fig_tipos(d_tipo: pl.DataFrame, tipo: str) -> go.Figure:
     return fig
 
 
+def fig_monthly_grid(d: pl.DataFrame) -> go.Figure:
+    fig = make_subplots(
+        rows=4, cols=3,
+        subplot_titles=DELITOS_CLAVE,
+        vertical_spacing=0.10,
+        horizontal_spacing=0.07,
+    )
+    for i, delito in enumerate(DELITOS_CLAVE):
+        r, c = divmod(i, 3)
+        sub = d.filter(pl.col('Delito_Clave') == delito).sort(['Año', 'MesNum'])
+        if sub.is_empty():
+            continue
+
+        x = [f"{row['Mes'][:3]} '{str(row['Año'])[2:]}" for row in sub.iter_rows(named=True)]
+        y = sub['Casos'].to_list()
+
+        fig.add_trace(go.Scatter(
+            x=x, y=y, mode='lines',
+            line=dict(color='#F4A261', width=1.5),
+            showlegend=False,
+            hovertemplate="%{x}: %{y:,}<extra></extra>",
+        ), row=r + 1, col=c + 1)
+
+        # Mark first and last values
+        fig.add_trace(go.Scatter(
+            x=[x[0], x[-1]], y=[y[0], y[-1]],
+            mode='markers+text',
+            marker=dict(color='#2E86AB', size=5),
+            text=[f"{y[0]:,}", f"{y[-1]:,}"],
+            textposition=['top right', 'top left'],
+            textfont=dict(size=8, color='#CBD5E1'),
+            showlegend=False, hoverinfo='skip',
+        ), row=r + 1, col=c + 1)
+
+        # YoY delta annotation (last month vs same month prior year)
+        last = sub.tail(1).row(0, named=True)
+        prev = sub.filter(
+            (pl.col('Año') == last['Año'] - 1) & (pl.col('MesNum') == last['MesNum'])
+        )
+        if len(prev) > 0 and prev['Casos'][0] > 0:
+            delta = y[-1] - prev['Casos'][0]
+            pct = delta / prev['Casos'][0] * 100
+            ann_text = f"{delta:+,.0f} / {pct:+.1f}%"
+            ann_color = '#E84855' if delta > 0 else '#3BB273'
+        else:
+            ann_text, ann_color = '', '#94A3B8'
+
+        axis_idx = '' if i == 0 else str(i + 1)
+        fig.add_annotation(
+            text=ann_text,
+            xref=f'x{axis_idx} domain', yref=f'y{axis_idx} domain',
+            x=0.04, y=0.12, showarrow=False,
+            font=dict(size=8, color=ann_color),
+            bgcolor='rgba(15,23,42,0.7)', borderpad=3,
+        )
+
+    fig.update_layout(
+        height=950,
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font_color='#CBD5E1',
+        margin=dict(t=40, b=20, l=10, r=10),
+    )
+    fig.update_xaxes(gridcolor='#1E293B', tickfont=dict(size=7), tickangle=45)
+    fig.update_yaxes(gridcolor='#1E293B', tickfont=dict(size=7))
+    for ann in fig.layout.annotations:
+        if ann.text in DELITOS_CLAVE:
+            ann.font = dict(size=10, color='#CBD5E1')
+    return fig
+
+
 def compute_kpis(d_yr: pl.DataFrame, d_ent: pl.DataFrame, d_tipo_totals: pl.DataFrame,
                  tipo: str, yr_range: tuple) -> tuple:
     total = d_yr['Casos'].sum()
@@ -252,18 +377,8 @@ app.layout = html.Div(style={"backgroundColor": "#0F172A", "minHeight": "100vh",
     html.P("Carpetas de investigación por municipio · 2015–2026 · SESNSP",
            style={"color": "#64748B", "marginBottom": "20px"}),
 
-    # Filters
+    # Shared year slider
     dbc.Row([
-        dbc.Col([
-            html.Label("Tipo de delito", style={"color": "#94A3B8", "fontSize": "12px"}),
-            dcc.Dropdown(
-                id="dd-tipo",
-                options=[{"label": t, "value": t} for t in TIPOS],
-                value="Todos los delitos",
-                clearable=False,
-                style={"backgroundColor": "#1E293B", "color": "#0F172A"},
-            ),
-        ], md=5),
         dbc.Col([
             html.Label("Rango de años", style={"color": "#94A3B8", "fontSize": "12px"}),
             dcc.RangeSlider(
@@ -275,36 +390,74 @@ app.layout = html.Div(style={"backgroundColor": "#0F172A", "minHeight": "100vh",
                 step=1,
                 tooltip={"placement": "bottom", "always_visible": False},
             ),
-        ], md=7),
-    ], className="mb-3"),
-
-    # KPI row
-    dbc.Row(id="kpi-row", className="mb-3 g-2"),
-
-    # Trend
-    dbc.Row([
-        dbc.Col(dcc.Graph(id="chart-trend"), md=12),
-    ], className="mb-3"),
-
-    # Map + ranking
-    dbc.Row([
-        dbc.Col([
-            html.Div(dcc.Graph(id="chart-map"), style={**CARD_STYLE, "padding": "8px"}),
-        ], md=7),
-        dbc.Col([
-            html.Div(dcc.Graph(id="chart-ranking"), style={**CARD_STYLE, "padding": "8px"}),
-        ], md=5),
-    ], className="mb-3 g-2"),
-
-    # Tipos breakdown
-    dbc.Row([
-        dbc.Col([
-            html.Div(dcc.Graph(id="chart-tipos"), style={**CARD_STYLE, "padding": "8px"}),
         ], md=12),
     ], className="mb-3"),
 
+    dcc.Tabs(id="tabs", value="tab-resumen", children=[
+
+        # ── Tab 1: Resumen general ─────────────────────────────────────────────
+        dcc.Tab(label="Resumen general", value="tab-resumen",
+                style=TAB_STYLE, selected_style=TAB_SEL, children=[
+
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Tipo de delito", style={"color": "#94A3B8", "fontSize": "12px"}),
+                    dcc.Dropdown(
+                        id="dd-tipo",
+                        options=[{"label": t, "value": t} for t in TIPOS],
+                        value="Todos los delitos",
+                        clearable=False,
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                    ),
+                ], md=5),
+            ], className="mb-3 mt-3"),
+
+            dbc.Row(id="kpi-row", className="mb-3 g-2"),
+
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="chart-trend"), md=12),
+            ], className="mb-3"),
+
+            dbc.Row([
+                dbc.Col(html.Div(dcc.Graph(id="chart-map"),
+                                 style={**CARD_STYLE, "padding": "8px"}), md=7),
+                dbc.Col(html.Div(dcc.Graph(id="chart-ranking"),
+                                 style={**CARD_STYLE, "padding": "8px"}), md=5),
+            ], className="mb-3 g-2"),
+
+            dbc.Row([
+                dbc.Col(html.Div(dcc.Graph(id="chart-tipos"),
+                                 style={**CARD_STYLE, "padding": "8px"}), md=12),
+            ], className="mb-3"),
+        ]),
+
+        # ── Tab 2: Alto impacto mensual ────────────────────────────────────────
+        dcc.Tab(label="Alto impacto · mensual", value="tab-mensual",
+                style=TAB_STYLE, selected_style=TAB_SEL, children=[
+
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Estado", style={"color": "#94A3B8", "fontSize": "12px"}),
+                    dcc.Dropdown(
+                        id="dd-estado",
+                        options=[{"label": e, "value": e} for e in ESTADOS],
+                        value="Nacional",
+                        clearable=False,
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                    ),
+                ], md=4),
+            ], className="mb-3 mt-3"),
+
+            dbc.Row([
+                dbc.Col(html.Div(dcc.Graph(id="chart-monthly-grid"),
+                                 style={**CARD_STYLE, "padding": "12px"}), md=12),
+            ], className="mb-3"),
+        ]),
+
+    ]),
+
     html.P("Fuente: Secretariado Ejecutivo del Sistema Nacional de Seguridad Pública (SESNSP)",
-           style={"color": "#475569", "fontSize": "11px", "textAlign": "center"}),
+           style={"color": "#475569", "fontSize": "11px", "textAlign": "center", "marginTop": "16px"}),
 ])
 
 
@@ -356,6 +509,21 @@ def update_all(tipo: str, yr_range: list):
         fig_ranking(d_ent),
         fig_tipos(d_breakdown, tipo),
     )
+
+
+@app.callback(
+    Output("chart-monthly-grid", "figure"),
+    Input("sl-años", "value"),
+    Input("dd-estado", "value"),
+)
+def update_monthly(yr_range: list, estado: str):
+    yr0, yr1 = yr_range
+    d = agg_monthly_long.filter(pl.col('Año').is_between(yr0, yr1))
+    if estado and estado != 'Nacional':
+        d = d.filter(pl.col('Entidad') == estado)
+    else:
+        d = d.group_by(['Año', 'Delito_Clave', 'Mes', 'MesNum']).agg(pl.col('Casos').sum())
+    return fig_monthly_grid(d)
 
 
 if __name__ == "__main__":
