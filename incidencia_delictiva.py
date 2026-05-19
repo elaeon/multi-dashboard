@@ -268,70 +268,108 @@ def fig_tipos(d_tipo: pl.DataFrame, tipo: str) -> go.Figure:
     return fig
 
 
+def _fmt(n: float) -> str:
+    if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
+    if n >= 1_000: return f"{n/1_000:.1f}k"
+    return f"{n:,.0f}"
+
+
 def fig_monthly_grid(d: pl.DataFrame) -> go.Figure:
     fig = make_subplots(
         rows=4, cols=3,
         subplot_titles=DELITOS_CLAVE,
-        vertical_spacing=0.10,
-        horizontal_spacing=0.07,
+        vertical_spacing=0.12,
+        horizontal_spacing=0.08,
     )
+
     for i, delito in enumerate(DELITOS_CLAVE):
         r, c = divmod(i, 3)
         sub = d.filter(pl.col('Delito_Clave') == delito).sort(['Año', 'MesNum'])
         if sub.is_empty():
             continue
 
-        x = [f"{row['Mes'][:3]} '{str(row['Año'])[2:]}" for row in sub.iter_rows(named=True)]
-        y = sub['Casos'].to_list()
+        pts = sub.iter_rows(named=True)
+        data_pts = list(pts)
 
+        x = [f"{pt['Mes'][:3]} '{str(pt['Año'])[2:]}" for pt in data_pts]
+        y = [pt['Casos'] for pt in data_pts]
+
+        # Lookup table for the reference line (same month, prior year)
+        casos_map = {(pt['Año'], pt['MesNum']): pt['Casos'] for pt in data_pts}
+        y_ref = [casos_map.get((pt['Año'] - 1, pt['MesNum'])) for pt in data_pts]
+        has_ref = any(v is not None for v in y_ref)
+
+        # Main trend line — yellow/orange, smooth spline
         fig.add_trace(go.Scatter(
             x=x, y=y, mode='lines',
-            line=dict(color='#F4A261', width=1.5),
+            line=dict(color='#F59E0B', width=2.5, shape='spline'),
             showlegend=False,
             hovertemplate="%{x}: %{y:,}<extra></extra>",
         ), row=r + 1, col=c + 1)
 
-        # Mark first and last values
+        # Reference line — same month from prior year, cyan, thin
+        if has_ref:
+            fig.add_trace(go.Scatter(
+                x=x, y=y_ref, mode='lines',
+                line=dict(color='#22D3EE', width=1.2, shape='spline'),
+                connectgaps=False, showlegend=False,
+                hovertemplate="%{x} (año ant.): %{y:,}<extra></extra>",
+            ), row=r + 1, col=c + 1)
+
+        # Endpoint marker + compact last-value label
         fig.add_trace(go.Scatter(
-            x=[x[0], x[-1]], y=[y[0], y[-1]],
-            mode='markers+text',
-            marker=dict(color='#2E86AB', size=5),
-            text=[f"{y[0]:,}", f"{y[-1]:,}"],
-            textposition=['top right', 'top left'],
-            textfont=dict(size=8, color='#CBD5E1'),
+            x=[x[-1]], y=[y[-1]], mode='markers+text',
+            marker=dict(color='#F59E0B', size=6),
+            text=[_fmt(y[-1])], textposition='top left',
+            textfont=dict(size=8, color='#F59E0B'),
             showlegend=False, hoverinfo='skip',
         ), row=r + 1, col=c + 1)
 
-        # YoY delta annotation (last month vs same month prior year)
-        last = sub.tail(1).row(0, named=True)
-        prev = sub.filter(
-            (pl.col('Año') == last['Año'] - 1) & (pl.col('MesNum') == last['MesNum'])
-        )
-        if len(prev) > 0 and prev['Casos'][0] > 0:
-            delta = y[-1] - prev['Casos'][0]
-            pct = delta / prev['Casos'][0] * 100
-            ann_text = f"{delta:+,.0f} / {pct:+.1f}%"
-            ann_color = '#E84855' if delta > 0 else '#3BB273'
+        # YoY delta annotation (colored box, bottom-left)
+        last_pt = data_pts[-1]
+        prior_val = casos_map.get((last_pt['Año'] - 1, last_pt['MesNum']))
+        if prior_val and prior_val > 0:
+            delta = y[-1] - prior_val
+            pct = delta / prior_val * 100
+            ann_text = f"{delta:+,.0f}<br>{pct:+.2f}%"
+            ann_color = '#22D3EE' if delta < 0 else '#F59E0B'
         else:
             ann_text, ann_color = '', '#94A3B8'
 
         axis_idx = '' if i == 0 else str(i + 1)
-        fig.add_annotation(
-            text=ann_text,
-            xref=f'x{axis_idx} domain', yref=f'y{axis_idx} domain',
-            x=0.04, y=0.12, showarrow=False,
-            font=dict(size=8, color=ann_color),
-            bgcolor='rgba(15,23,42,0.7)', borderpad=3,
+        if ann_text:
+            fig.add_annotation(
+                text=ann_text,
+                xref=f'x{axis_idx} domain', yref=f'y{axis_idx} domain',
+                x=0.04, y=0.22, showarrow=False,
+                font=dict(size=8, color=ann_color),
+                bgcolor='#0F2744', bordercolor=ann_color, borderwidth=1, borderpad=4,
+            )
+
+        # X-axis: only label January of each year to avoid crowding
+        ticktext = [
+            f"Ene '{str(pt['Año'])[2:]}" if pt['MesNum'] == 1 else ''
+            for pt in data_pts
+        ]
+        fig.update_xaxes(
+            tickmode='array', tickvals=x, ticktext=ticktext,
+            tickfont=dict(size=8, color='#94A3B8'),
+            showgrid=False, zeroline=False, tickangle=0,
+            row=r + 1, col=c + 1,
+        )
+        fig.update_yaxes(
+            showgrid=True, gridwidth=1, gridcolor='#1E3A5F',
+            zeroline=False, tickformat='.2s',
+            tickfont=dict(size=8, color='#94A3B8'),
+            row=r + 1, col=c + 1,
         )
 
     fig.update_layout(
         height=950,
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='#0F172A', plot_bgcolor='#0A1628',
         font_color='#CBD5E1',
-        margin=dict(t=40, b=20, l=10, r=10),
+        margin=dict(t=50, b=30, l=50, r=20),
     )
-    fig.update_xaxes(gridcolor='#1E293B', tickfont=dict(size=7), tickangle=45)
-    fig.update_yaxes(gridcolor='#1E293B', tickfont=dict(size=7))
     for ann in fig.layout.annotations:
         if ann.text in DELITOS_CLAVE:
             ann.font = dict(size=10, color='#CBD5E1')
