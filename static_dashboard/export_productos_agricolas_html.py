@@ -13,6 +13,9 @@ Charts that stay as full-dataset context:
 
 Run: uv run python export_productos_agricolas_html.py
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import json
 import polars as pl

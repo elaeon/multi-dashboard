@@ -10,6 +10,9 @@ KPIs, municipality bar, supply bar, and supply donut update on year selection.
 
 Run: uv run python export_calidad_agua_html.py
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import json
 import polars as pl

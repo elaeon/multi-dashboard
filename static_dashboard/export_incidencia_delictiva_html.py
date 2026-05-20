@@ -9,6 +9,9 @@ Dynamic (per filter):   trend line, state ranking bar, states trend line, KPIs
 
 Run: uv run python export_incidencia_delictiva_html.py
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import json
 import polars as pl

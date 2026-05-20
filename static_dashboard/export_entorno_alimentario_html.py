@@ -14,6 +14,9 @@ Tab "Crisis Estructural" — always full dataset, static:
 
 Run: uv run python export_entorno_alimentario_html.py
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import json
 import polars as pl
