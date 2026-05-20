@@ -18,7 +18,7 @@ import json
 import polars as pl
 import plotly.io as pio
 
-from productos_agricolas import (
+from dashboard.productos_agricolas import (
     df, compute_kpis, YEAR_MIN, YEAR_MAX, _fmt_pesos, ALL_CROPS,
     fig_produccion_anual, fig_top_cultivos_valor,
     fig_mapa_estados, fig_top_estados, fig_rendimiento_estados,

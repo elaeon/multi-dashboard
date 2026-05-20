@@ -14,7 +14,7 @@ import json
 import polars as pl
 import plotly.io as pio
 
-from incidencia_delictiva import (
+from dashboard.incidencia_delictiva import (
     MONTHS, STATE_ISO, GEO,
     agg_yr_bien, agg_yr_tipo, agg_yr_ent, agg_yr_ent_tipo, agg_monthly_long,
     TIPOS,

@@ -22,7 +22,7 @@ import json
 import polars as pl
 import plotly.io as pio
 
-from desaparecidos import (
+from dashboard.desaparecidos import (
     df, ESTADOS, MES_NOMBRES, AGE_LABELS, AGE_RANGES,
     SEXO_ORDER,
     fig_state_ranking, fig_mapa_desaparecidos, compute_kpis,

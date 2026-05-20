@@ -23,7 +23,7 @@ import json
 import polars as pl
 import plotly.io as pio
 
-from temperaturas_lluvias import (
+from dashboard.temperaturas_lluvias import (
     df, ESTADOS, MES_NOMBRES, _baseline,
     fig_warming_delta, fig_prec_state_ranking, compute_kpis,
 )

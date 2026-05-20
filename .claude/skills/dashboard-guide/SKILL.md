@@ -347,7 +347,22 @@ timeout 8 uv run python your_dashboard.py 2>/dev/null
 
 | File | Purpose |
 |---|---|
-| `<dataset>.py` | Interactive Dash app |
-| `export_<dataset>_html.py` | Static HTML exporter → `site/<dataset>.html` |
-| `data/` | Source CSVs and GeoJSON |
+| `dashboard/<dataset>.py` | Interactive Dash app |
+| `dashboard/__init__.py` | Package init (required for imports) |
+| `dashboard/assets/` | CSS served by Dash |
+| `static_dashboard/export_<dataset>_html.py` | Static HTML exporter → `site/<dataset>.html` |
+| `scripts/` | One-off data preparation scripts (e.g. merge xlsx → parquet) |
+| `data/` | Source CSVs, xlsx, GeoJSON, and parquet files |
 | `site/` | Static output for GitHub Pages |
+
+**Run commands (always from project root):**
+```bash
+uv run python dashboard/<dataset>.py              # interactive Dash app
+uv run python static_dashboard/export_<dataset>_html.py  # generate static HTML
+uv run python scripts/merge_incidencia.py <input_dir> <output.parquet>
+```
+
+**Import pattern in export scripts:**
+```python
+from dashboard.<dataset> import df, fig_a, fig_b, ...
+```

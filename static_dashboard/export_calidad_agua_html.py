@@ -15,7 +15,7 @@ import json
 import polars as pl
 import plotly.io as pio
 
-from calidad_agua_escuelas import (
+from dashboard.calidad_agua_escuelas import (
     df, VALID_YEARS, RISK_COLORS, CHART_LAYOUT,
     fig_trend_year, fig_ecoli_dist,
     compute_kpis,

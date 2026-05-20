@@ -20,7 +20,7 @@ import polars as pl
 import plotly.io as pio
 from collections import Counter
 
-from entorno_alimentario_escuelas import (
+from dashboard.entorno_alimentario_escuelas import (
     df, Q_COLS, Q_LABELS, SELLER_COL, VALID_CICLOS, pct_yes,
     fig_trend, fig_panorama, fig_states, fig_sellers, fig_roles, fig_crisis_trend,
 )
