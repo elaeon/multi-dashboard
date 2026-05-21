@@ -9,6 +9,12 @@ description: Best practices for building Polars + Plotly + Dash dashboards with 
 
 ---
 
+## Phase 0 — Write the message first
+
+For each chart, write one sentence describing what the reader should learn ("X grew while Y shrank", "A and B correlate", "region C is an outlier"). If you can't write it, the chart will fail. The sentence picks the chart — not the reverse.
+
+---
+
 ## Phase 1 — Explore before coding
 
 Run these before writing a single chart. Wrong assumptions here cause rewrites.
@@ -144,6 +150,7 @@ Accent blue: `#2E86AB`. Green: `#3BB273`. Orange: `#F4A261`. Red: `#E84855`.
 | Geographic, point locations with a category | **Symbol map** (`go.Scattermap`) | Color = category, filter to valid bounds first |
 | Correlation / 3 variables | Scatter → Bubble | — |
 | Distribution, one variable | Histogram | — |
+| Distribution compared across categories | Box plot (or violin) | Shows median, spread, outliers in one mark |
 | Seasonality (year × month) | Heatmap (`go.Heatmap`) | Best pattern for cyclical data |
 
 **Skip always:** 3D charts, animated charts (break static export), tables (use sorted bars instead).
@@ -388,6 +395,9 @@ function applyWhenReady(key, attempt) {
 
 | Don't | Do instead |
 |---|---|
+| Sort categorical bars alphabetically | Sort by value (descending for rankings) |
+| Truncate the y-axis on a bar chart | Bars start at 0; lines/scatter use a data-appropriate range |
+| Dual y-axis on one chart | Two stacked panels or small multiples |
 | Use a donut with 5+ categories | Horizontal bar sorted by value |
 | Use a donut when small differences matter | Stacked 100% horizontal bar — 3% is invisible in a circle, readable in a bar |
 | Put 6+ overlapping lines on one chart | Small multiples — one panel per series |
