@@ -127,27 +127,175 @@ Accent blue: `#2E86AB`. Green: `#3BB273`. Orange: `#F4A261`. Red: `#E84855`.
 
 ## Phase 4 — Chart selection
 
-**Always useful:**
-- Line/area trend over time (the "so what" chart — shows growth, drops, recovery)
-- Horizontal bar top-N (sortable, easy to read at any length)
-- Choropleth map with GeoJSON (`px.choropleth_map`, `map_style="carto-darkmatter"`)
-- Treemap for part-of-whole with many categories
-- Donut for 2–4 categories only
-- Bubble scatter for 3-variable relationships (x, y, size)
+### Decision table
 
-**Skip unless clearly requested:**
-- Pie charts with > 4 slices
-- 3D charts
-- Animated charts (they break static export)
-- Tables (use bar charts instead)
+| Data relationship | First choice | Notes |
+|---|---|---|
+| Change over time, 1–3 series | Line / area | — |
+| Change over time, many overlapping series | Small multiples | Never >5 lines on one chart |
+| Change over time, few discrete points | Column bar | — |
+| Before → after, 2 time points, absolute scale | **Dumbbell plot** | Shows starting value + magnitude of change |
+| Before → after, many entities, direction story | **Slope chart** | Red = got worse, green = got better |
+| Rankings + variability across a period | **Dot-and-range** | Mean dot + min/max tick marks |
+| Rankings, single value | Horizontal bar (sorted) | — |
+| Part-of-whole, any number of categories | **Stacked 100% horizontal bar** | Default choice; beats donut in almost every case |
+| Hierarchical part-of-whole | Treemap | Only when hierarchy matters |
+| Geographic, admin regions | Choropleth (`px.choropleth_map`) | `map_style="carto-darkmatter"` |
+| Geographic, point locations with a category | **Symbol map** (`go.Scattermap`) | Color = category, filter to valid bounds first |
+| Correlation / 3 variables | Scatter → Bubble | — |
+| Distribution, one variable | Histogram | — |
+| Seasonality (year × month) | Heatmap (`go.Heatmap`) | Best pattern for cyclical data |
 
-**Height rules:**
+**Skip always:** 3D charts, animated charts (break static export), tables (use sorted bars instead).
+
+---
+
+### Donut / pie — narrow use case
+
+**Default: use a stacked 100% horizontal bar instead.** It reads more precisely, scales to any number of categories, and is consistent with the rest of the dashboard.
+
+**Use a donut only when:** ≤4 categories AND the reader only needs a rough gestalt ("roughly half vs half") AND exact differences don't matter.
+
+**Always replace a donut with a stacked bar when:**
+- Any two categories are within ~15% of each other
+- More than 4 categories
+- The chart sits in a tab or row with other bar charts (consistency)
+- The absolute counts also matter (bar can show both)
+
+Stacked 100% bar pattern (works for 2–N categories):
+```python
+for cat in categories:          # iterate in display order
+    pct = count_map[cat] / total * 100
+    fig.add_trace(go.Bar(
+        x=[pct], y=["Label"], orientation="h", name=cat,
+        marker_color=COLORS[cat],
+        text=f"{pct:.1f}%", textposition="inside", insidetextanchor="middle",
+        customdata=[count_map[cat]],
+        hovertemplate=f"<b>{cat}</b>: %{{x:.1f}}%  (n=%{{customdata[0]:,}})<extra></extra>",
+    ))
+fig.update_layout(barmode="stack", xaxis=dict(range=[0, 100], visible=False))
+```
+
+---
+
+### Dumbbell / arrow plot (before → after, absolute scale)
+
+Use when the story needs BOTH the starting value AND the change for many entities.
+Classic cases: temperature baseline vs current, pay in two periods, scores before/after intervention.
+
+```python
+# Connector lines using None-separator trick
+x_lines, y_lines = [], []
+for start, end, label in zip(starts, ends, labels):
+    x_lines += [start, end, None]
+    y_lines += [label, label, None]
+
+fig.add_trace(go.Scatter(x=x_lines, y=y_lines, mode="lines",
+                          line=dict(color="#475569", width=1.5),
+                          showlegend=False, hoverinfo="skip"))
+fig.add_trace(go.Scatter(x=starts, y=labels, mode="markers", name="Periodo A",
+                          marker=dict(color="#64748B", size=10, symbol="circle-open",
+                                      line=dict(color="#64748B", width=2))))
+fig.add_trace(go.Scatter(x=ends, y=labels, mode="markers", name="Periodo B",
+                          marker=dict(color=colors, size=10),
+                          customdata=deltas,
+                          hovertemplate="<b>%{y}</b><br>%{x:.2f}  Δ: %{customdata:.2f}<extra></extra>"))
+```
+
+---
+
+### Slope chart (first year → last year, direction story)
+
+Use when the story is **which direction did each entity move** across two time points.
+Sort by end value. Color red = worsened, green = improved.
+
+```python
+for row in result.iter_rows(named=True):
+    color = "#E84855" if row["delta"] > 0 else "#3BB273"
+    fig.add_trace(go.Scatter(
+        x=[str(y0), str(y1)], y=[row["r0"], row["r1"]],
+        mode="lines+markers",
+        line=dict(color=color, width=1.5), marker=dict(color=color, size=7),
+        showlegend=False,
+        hovertemplate=f"<b>{row['ENTITY']}</b><br>%{{x}}: %{{y:.1f}}<extra></extra>",
+    ))
+fig.update_xaxes(type="category", gridcolor="rgba(0,0,0,0)")
+
+# Legend proxy traces to summarize count
+fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines+markers",
+                          line=dict(color="#E84855"), marker=dict(color="#E84855"),
+                          name=f"▲ Aumentó ({n_up})"))
+fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines+markers",
+                          line=dict(color="#3BB273"), marker=dict(color="#3BB273"),
+                          name=f"▼ Disminuyó ({n_dn})"))
+```
+
+---
+
+### Dot-and-range (mean + min/max across a period)
+
+Use when you need to show both **typical level** and **variability**. Pair with a slope chart: slope = direction, dot-and-range = stability.
+
+```python
+x_lines, y_lines = [], []
+for mn, mx, s in zip(mins, maxs, states):
+    x_lines += [mn, mx, None]
+    y_lines += [s, s, None]
+
+fig.add_trace(go.Scatter(x=x_lines, y=y_lines, mode="lines",
+                          line=dict(color="#334155", width=2),
+                          showlegend=False, hoverinfo="skip"))
+for x_vals, name in [(mins, "Mínimo"), (maxs, "Máximo")]:
+    fig.add_trace(go.Scatter(x=x_vals, y=states, mode="markers", name=name,
+                              marker=dict(symbol="line-ew", size=8, color="#475569",
+                                          line=dict(width=2, color="#475569"))))
+fig.add_trace(go.Scatter(x=means, y=states, mode="markers", name="Promedio",
+                          marker=dict(color=colors, size=10)))
+fig.update_yaxes(gridcolor="rgba(0,0,0,0)")
+```
+
+---
+
+### Symbol map (point locations with a categorical variable)
+
+Use when data has lat/lon coordinates and you want to show spatial clustering. Filter to valid coordinate bounds before plotting.
+
+```python
+# Filter to valid bounds first (example: Mexico)
+geo = d.with_columns(
+    pl.col("LAT_COL").cast(pl.Float64, strict=False).alias("lat"),
+    pl.col("LON_COL").cast(pl.Float64, strict=False).alias("lon"),
+).filter(pl.col("lat").is_between(14, 33) & pl.col("lon").is_between(-118, -86))
+
+center_lat = float(geo["lat"].mean())
+center_lon = float(geo["lon"].mean())
+
+for cat, color in COLORS.items():
+    subset = geo.filter(pl.col("CATEGORY") == cat)
+    fig.add_trace(go.Scattermap(
+        lat=subset["lat"].to_list(), lon=subset["lon"].to_list(),
+        mode="markers", marker=dict(size=7, color=color, opacity=0.7),
+        name=cat,
+        customdata=list(zip(subset["LABEL1"].fill_null("—").to_list(),
+                            subset["LABEL2"].fill_null("—").to_list())),
+        hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]}<extra></extra>",
+    ))
+fig.update_layout(map=dict(style="carto-darkmatter",
+                            center=dict(lat=center_lat, lon=center_lon), zoom=6),
+                  paper_bgcolor="rgba(0,0,0,0)", font_color="#CBD5E1")
+```
+
+---
+
+### Height rules
 - Fixed charts: 360–420 px
 - Horizontal bars with variable rows: `max(300, n_rows * 28 + 80)`
-- Maps: 580–620 px
+- Dot-and-range / slope charts: `max(300, n_entities * 22 + 80)`
+- Maps (choropleth): 580–620 px
+- Maps (symbol): 480–520 px
 
-**Stacked bar legend placement:**
-Legend at `y=1.1` with a small top margin overlaps the title or the tallest bars. Move it below instead:
+### Stacked bar legend placement
+Legend at `y=1.1` overlaps the title or tallest bars. Move it below:
 ```python
 legend=dict(orientation="h", y=-0.18, x=0),
 margin=dict(t=40, b=70, l=10, r=10),
@@ -240,11 +388,17 @@ function applyWhenReady(key, attempt) {
 
 | Don't | Do instead |
 |---|---|
+| Use a donut with 5+ categories | Horizontal bar sorted by value |
+| Use a donut when small differences matter | Stacked 100% horizontal bar — 3% is invisible in a circle, readable in a bar |
+| Put 6+ overlapping lines on one chart | Small multiples — one panel per series |
+| Use a ranked bar when change over time matters | Slope chart (direction) or dot-and-range (stability) |
+| Plot lat/lon data only on a choropleth | Add a symbol map — spatial clustering is invisible in state-level aggregates |
 | Filter `df` in a loop for 300+ items | Batch `group_by` → build index dict |
 | Average a numeric column across mixed units | Check `UNIDAD_MEDIDA` first, filter to dominant unit |
 | Add features "just in case" | Build exactly what was asked |
 | Expand an existing callback | Add a second callback |
 | Use `px.choropleth_mapbox` | Use `px.choropleth_map` (Plotly ≥ 5.12) |
+| Use `go.Scattermapbox` | Use `go.Scattermap` with `layout.map` (Plotly ≥ 5.12) |
 | Render server-side for each static filter | Pre-compute JSON, swap client-side |
 | Guess categorical values | Check `.n_unique()` and `.unique()` first |
 | Commit without testing figures | Run all figure factories on full df + each filter value |
