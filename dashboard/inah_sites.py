@@ -9,10 +9,10 @@ import dash_bootstrap_components as dbc
 # ── Data ──────────────────────────────────────────────────────────────────────
 df = (
     pl.read_csv("data/inah_sitios.csv")
+    .with_columns(pl.col("PERIODO").str.to_date("%Y-%m-%d"))
     .with_columns(
-        pl.col("PERIODO").str.to_date("%Y-%m-%d"),
-        pl.col("PERIODO").str.to_date("%Y-%m-%d").dt.year().alias("year"),
-        pl.col("PERIODO").str.to_date("%Y-%m-%d").dt.month().alias("month"),
+        pl.col("PERIODO").dt.year().alias("year"),
+        pl.col("PERIODO").dt.month().alias("month"),
     )
     .filter(pl.col("year") < 2026)  # exclude partial year
 )
@@ -50,6 +50,10 @@ CHART_LAYOUT = dict(
     font_color="#CBD5E1",
     xaxis=dict(gridcolor="#334155"),
     yaxis=dict(gridcolor="#334155"),
+)
+CHART_LAYOUT_BASE = dict(
+    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    font_color="#CBD5E1",
 )
 
 
@@ -104,7 +108,7 @@ def fig_yoy_change(d: pl.DataFrame) -> go.Figure:
         height=320,
         xaxis=dict(gridcolor="#334155", title="Año"),
         yaxis=dict(gridcolor="#334155", title="Cambio %"),
-        **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis")},
+        **CHART_LAYOUT_BASE,
     )
     return fig
 
@@ -189,23 +193,22 @@ def fig_top_states(d: pl.DataFrame) -> go.Figure:
         height=500, coloraxis_showscale=False,
         xaxis=dict(gridcolor="#334155"),
         yaxis=dict(gridcolor="rgba(0,0,0,0)"),
-        **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis")},
+        **CHART_LAYOUT_BASE,
     )
     return fig
 
 
 def fig_foreign_ratio(d: pl.DataFrame) -> go.Figure:
-    state_nat = d.group_by("ESTADO", "NACIONALIDAD").agg(pl.col("NÚMERO DE VISITAS").sum())
-    state_total = d.group_by("ESTADO").agg(pl.col("NÚMERO DE VISITAS").sum().alias("total"))
-    state_foreign = (
-        state_nat.filter(pl.col("NACIONALIDAD") == "Extranjeros")
-        .rename({"NÚMERO DE VISITAS": "foreign"})
-        .select("ESTADO", "foreign")
-    )
     result = (
-        state_total.join(state_foreign, on="ESTADO", how="left")
-        .with_columns(pl.col("foreign").fill_null(0))
-        .with_columns((pl.col("foreign") / pl.col("total") * 100).round(1).alias("pct_foreign"))
+        d.group_by("ESTADO")
+        .agg(
+            pl.col("NÚMERO DE VISITAS").sum().alias("total"),
+            pl.col("NÚMERO DE VISITAS").filter(pl.col("NACIONALIDAD") == "Extranjeros").sum().alias("foreign"),
+        )
+        .with_columns(
+            pl.col("foreign").fill_null(0),
+            (pl.col("foreign").fill_null(0) / pl.col("total") * 100).round(1).alias("pct_foreign"),
+        )
         .sort("pct_foreign")
     )
     pct_vals = result["pct_foreign"].to_list()
@@ -223,7 +226,7 @@ def fig_foreign_ratio(d: pl.DataFrame) -> go.Figure:
         height=700,
         xaxis=dict(gridcolor="#334155", title="% Extranjeros"),
         yaxis=dict(gridcolor="rgba(0,0,0,0)", title=""),
-        **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis")},
+        **CHART_LAYOUT_BASE,
     )
     return fig
 
@@ -238,12 +241,10 @@ def fig_top_sites(d: pl.DataFrame) -> go.Figure:
         .with_columns(pl.col("CENTRO DE TRABAJO").str.slice(0, 42).alias("nombre"))
     )
 
-    # Nationality breakdown for those 20 sites
     breakdown = (
-        d.join(top20.select("CENTRO DE TRABAJO"), on="CENTRO DE TRABAJO")
-        .group_by("CENTRO DE TRABAJO", "NACIONALIDAD")
+        d.join(top20, on="CENTRO DE TRABAJO")
+        .group_by("CENTRO DE TRABAJO", "NACIONALIDAD", "nombre", "total", "TIPO DE SITIO")
         .agg(pl.col("NÚMERO DE VISITAS").sum())
-        .join(top20.select("CENTRO DE TRABAJO", "nombre", "total", "TIPO DE SITIO"), on="CENTRO DE TRABAJO")
         .with_columns(
             (pl.col("NÚMERO DE VISITAS") / pl.col("total") * 100).round(1).alias("pct")
         )
@@ -267,30 +268,40 @@ def fig_top_sites(d: pl.DataFrame) -> go.Figure:
         height=620, legend=dict(orientation="h", y=-0.08, title=""),
         xaxis=dict(gridcolor="#334155"),
         yaxis=dict(gridcolor="rgba(0,0,0,0)"),
-        **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis")},
+        **CHART_LAYOUT_BASE,
     )
     return fig
 
 
 def fig_foreign_by_site_type(d: pl.DataFrame) -> go.Figure:
-    cross = d.group_by("TIPO DE SITIO", "NACIONALIDAD").agg(pl.col("NÚMERO DE VISITAS").sum())
-    total_by_type = d.group_by("TIPO DE SITIO").agg(pl.col("NÚMERO DE VISITAS").sum().alias("total"))
-    cross = cross.join(total_by_type, on="TIPO DE SITIO").with_columns(
-        (pl.col("NÚMERO DE VISITAS") / pl.col("total") * 100).round(1).alias("pct")
+    cross = (
+        d.group_by("TIPO DE SITIO", "NACIONALIDAD")
+        .agg(pl.col("NÚMERO DE VISITAS").sum())
+        .with_columns(
+            (pl.col("NÚMERO DE VISITAS") / pl.col("NÚMERO DE VISITAS").sum().over("TIPO DE SITIO") * 100)
+            .round(1).alias("pct")
+        )
     )
     fig = px.bar(
-        cross, x="TIPO DE SITIO", y="pct",
+        cross, x="pct", y="TIPO DE SITIO",
         color="NACIONALIDAD", color_discrete_map=NAT_COLORS,
-        barmode="stack",
+        barmode="stack", orientation="h",
         title="Composición Nacional vs Extranjero por tipo de sitio",
-        labels={"pct": "% de visitas", "TIPO DE SITIO": ""},
+        labels={"pct": "", "TIPO DE SITIO": ""},
         text="pct",
+        custom_data=["NÚMERO DE VISITAS"],
     )
-    fig.update_traces(texttemplate="%{text:.1f}%", textposition="inside")
+    fig.update_traces(
+        texttemplate="%{text:.1f}%", textposition="inside", insidetextanchor="middle",
+        hovertemplate="<b>%{y}</b> · %{data.name}: %{x:.1f}%  (%{customdata[0]:,.0f})<extra></extra>",
+    )
     fig.update_layout(
-        height=380, legend=dict(orientation="h", y=-0.2, title=""),
-        yaxis=dict(gridcolor="#334155", title="% de visitas"),
-        **{k: v for k, v in CHART_LAYOUT.items() if k != "yaxis"},
+        height=300,
+        xaxis=dict(range=[0, 100], visible=False),
+        yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+        legend=dict(orientation="h", y=-0.25, x=0, title=""),
+        margin=dict(t=40, b=70, l=10, r=10),
+        **CHART_LAYOUT_BASE,
     )
     return fig
 
@@ -366,7 +377,7 @@ def fig_paid_free_ratio(d: pl.DataFrame) -> go.Figure:
         height=360,
         xaxis=dict(gridcolor="#334155", title="Año"),
         yaxis=dict(gridcolor="#334155", title="% pagó boleto", range=[0, y_max]),
-        **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis")},
+        **CHART_LAYOUT_BASE,
     )
     return fig
 
@@ -395,7 +406,7 @@ def fig_foreign_trend(d: pl.DataFrame) -> go.Figure:
         height=360,
         xaxis=dict(gridcolor="#334155", title="Año"),
         yaxis=dict(gridcolor="#334155", title="% extranjeros"),
-        **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis")},
+        **CHART_LAYOUT_BASE,
     )
     return fig
 
@@ -455,7 +466,7 @@ def fig_monthly_pattern(d: pl.DataFrame) -> go.Figure:
         height=360,
         xaxis=dict(gridcolor="rgba(0,0,0,0)"),
         yaxis=dict(gridcolor="#334155", title="Visitas promedio"),
-        **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis")},
+        **CHART_LAYOUT_BASE,
     )
     return fig
 
@@ -466,7 +477,6 @@ def fig_sites_by_state(d: pl.DataFrame) -> go.Figure:
         .agg(pl.col("CENTRO DE TRABAJO").n_unique().alias("n_centros"))
         .sort("ESTADO")
     )
-    # Order states by total number of centros descending
     state_order = (
         counts.group_by("ESTADO")
         .agg(pl.col("n_centros").sum().alias("total"))
@@ -489,17 +499,20 @@ def fig_sites_by_state(d: pl.DataFrame) -> go.Figure:
         legend=dict(orientation="h", y=-0.06, title=""),
         xaxis=dict(gridcolor="#334155", title="Número de centros de trabajo"),
         yaxis=dict(gridcolor="rgba(0,0,0,0)"),
-        **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis")},
+        **CHART_LAYOUT_BASE,
     )
     return fig
 
 
 def fig_states_map(d: pl.DataFrame) -> go.Figure:
-    state_totals = d.group_by("ESTADO").agg(pl.col("NÚMERO DE VISITAS").sum().alias("total"))
-    state_sites = d.group_by("ESTADO").agg(pl.col("CENTRO DE TRABAJO").n_unique().alias("n_sitios"))
-    state_foreign = (
-        d.filter(pl.col("NACIONALIDAD") == "Extranjeros")
-        .group_by("ESTADO").agg(pl.col("NÚMERO DE VISITAS").sum().alias("extranjeros"))
+    summary_base = (
+        d.group_by("ESTADO")
+        .agg(
+            pl.col("NÚMERO DE VISITAS").sum().alias("total"),
+            pl.col("CENTRO DE TRABAJO").n_unique().alias("n_sitios"),
+            pl.col("NÚMERO DE VISITAS").filter(pl.col("NACIONALIDAD") == "Extranjeros").sum().alias("extranjeros"),
+        )
+        .with_columns(pl.col("extranjeros").fill_null(0))
     )
     top_site = (
         d.group_by("ESTADO", "CENTRO DE TRABAJO")
@@ -508,15 +521,10 @@ def fig_states_map(d: pl.DataFrame) -> go.Figure:
         .unique("ESTADO", keep="first")
         .select("ESTADO", pl.col("CENTRO DE TRABAJO").str.slice(0, 38).alias("top_sitio"))
     )
-
     summary = (
-        state_totals
-        .join(state_sites, on="ESTADO", how="left")
-        .join(state_foreign, on="ESTADO", how="left")
-        .join(top_site, on="ESTADO", how="left")
+        summary_base.join(top_site, on="ESTADO", how="left")
         .with_columns(
-            pl.col("extranjeros").fill_null(0),
-            (pl.col("extranjeros").fill_null(0) / pl.col("total") * 100).round(1).alias("pct_ext"),
+            (pl.col("extranjeros") / pl.col("total") * 100).round(1).alias("pct_ext"),
             (pl.col("total") / 1e6).round(2).alias("total_M"),
         )
     )
@@ -784,10 +792,12 @@ def update_all(year_range, centro):
     sites_sub = centro if centro else "museos y zonas arqueológicas"
 
     badge_text = "filtro activo" if centro else ""
-    badge_style = {**{"display": "inline-block", "background": "#2E86AB", "color": "#fff",
-                      "borderRadius": "4px", "fontSize": "0.72rem", "padding": "1px 7px",
-                      "marginLeft": "8px", "verticalAlign": "middle"},
-                   **({"display": "none"} if not centro else {})}
+    badge_style = {
+        "display": "none" if not centro else "inline-block",
+        "background": "#2E86AB", "color": "#fff",
+        "borderRadius": "4px", "fontSize": "0.72rem", "padding": "1px 7px",
+        "marginLeft": "8px", "verticalAlign": "middle",
+    }
 
     return (
         f"{total / 1e6:.1f}M",

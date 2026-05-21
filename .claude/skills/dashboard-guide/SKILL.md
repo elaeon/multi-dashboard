@@ -137,12 +137,12 @@ Accent blue: `#2E86AB`. Green: `#3BB273`. Orange: `#F4A261`. Red: `#E84855`.
 
 | Data relationship | First choice | Notes |
 |---|---|---|
-| Change over time, 1–3 series | Line / area | — |
+| Change over time, 1–3 series | Line | — |
 | Change over time, many overlapping series | Small multiples | Never >5 lines on one chart |
 | Change over time, few discrete points | Column bar | — |
 | Before → after, 2 time points, absolute scale | **Dumbbell plot** | Shows starting value + magnitude of change |
-| Before → after, many entities, direction story | **Slope chart** | Red = got worse, green = got better |
-| Rankings + variability across a period | **Dot-and-range** | Mean dot + min/max tick marks |
+| Before → after, many entities, direction story | **Slope chart** | Red = direction of harm, green = direction of improvement (sign depends on metric) |
+| Rankings with mean + min/max across a period | **Dot-and-range** | Mean dot + min/max ticks; use when rank order matters |
 | Rankings, single value | Horizontal bar (sorted) | — |
 | Part-of-whole, any number of categories | **Stacked 100% horizontal bar** | Default choice; beats donut in almost every case |
 | Hierarchical part-of-whole | Treemap | Only when hierarchy matters |
@@ -150,10 +150,12 @@ Accent blue: `#2E86AB`. Green: `#3BB273`. Orange: `#F4A261`. Red: `#E84855`.
 | Geographic, point locations with a category | **Symbol map** (`go.Scattermap`) | Color = category, filter to valid bounds first |
 | Correlation / 3 variables | Scatter → Bubble | — |
 | Distribution, one variable | Histogram | — |
-| Distribution compared across categories | Box plot (or violin) | Shows median, spread, outliers in one mark |
+| Full distribution shape across categories | Box plot (or violin) | Median, IQR, outliers — use when distribution shape matters |
 | Seasonality (year × month) | Heatmap (`go.Heatmap`) | Best pattern for cyclical data |
 
-**Skip always:** 3D charts, animated charts (break static export), tables (use sorted bars instead).
+**Skip always:** 3D charts.
+**Skip in static export:** animated charts (break export); fine in interactive Dash if used sparingly.
+**Prefer sorted bars over tables for rankings.** Use tables only when readers need to look up exact values.
 
 ---
 
@@ -214,11 +216,13 @@ fig.add_trace(go.Scatter(x=ends, y=labels, mode="markers", name="Periodo B",
 ### Slope chart (first year → last year, direction story)
 
 Use when the story is **which direction did each entity move** across two time points.
-Sort by end value. Color red = worsened, green = improved.
+Sort by end value. Color the *direction of harm* in red and *improvement* in green — which sign that is depends on the metric (rising poverty = harm; rising graduation = improvement).
 
 ```python
+WORSE_WHEN_UP = True   # set False for benefit metrics (graduation, income, etc.)
 for row in result.iter_rows(named=True):
-    color = "#E84855" if row["delta"] > 0 else "#3BB273"
+    worsened = (row["delta"] > 0) == WORSE_WHEN_UP
+    color = "#E84855" if worsened else "#3BB273"
     fig.add_trace(go.Scatter(
         x=[str(y0), str(y1)], y=[row["r0"], row["r1"]],
         mode="lines+markers",
@@ -463,7 +467,7 @@ Order by urgency, not by column order. Lead with numbers. Use this structure:
 5. **A contradiction** — something that shouldn't be true simultaneously but is.
 6. **The most actionable finding** — what could actually be fixed, and why it's tractable.
 
-Present your findings to the user to choice which are worth to add in the dashboard
+Present your findings to the user to choose which are worth adding to the dashboard.
 
 ### What makes a finding "shocking"
 
