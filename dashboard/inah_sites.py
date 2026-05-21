@@ -8,7 +8,7 @@ import dash_bootstrap_components as dbc
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 df = (
-    pl.read_csv("data/visita_museos.csv")
+    pl.read_csv("data/inah_sitios.csv")
     .with_columns(
         pl.col("PERIODO").str.to_date("%Y-%m-%d"),
         pl.col("PERIODO").str.to_date("%Y-%m-%d").dt.year().alias("year"),
@@ -109,31 +109,59 @@ def fig_yoy_change(d: pl.DataFrame) -> go.Figure:
     return fig
 
 
-def fig_site_donut(d: pl.DataFrame) -> go.Figure:
-    totals = d.group_by("TIPO DE SITIO").agg(pl.col("NÚMERO DE VISITAS").sum())
-    fig = px.pie(
-        totals, names="TIPO DE SITIO", values="NÚMERO DE VISITAS",
-        color="TIPO DE SITIO", color_discrete_map=SITE_COLORS,
-        hole=0.5, title="Visitas por tipo de sitio",
+def fig_site_bar(d: pl.DataFrame) -> go.Figure:
+    totals = d.group_by("TIPO DE SITIO").agg(pl.col("NÚMERO DE VISITAS").sum()).sort("TIPO DE SITIO")
+    total = int(totals["NÚMERO DE VISITAS"].sum())
+    fig = go.Figure()
+    for row in totals.iter_rows(named=True):
+        tipo = row["TIPO DE SITIO"]
+        pct  = row["NÚMERO DE VISITAS"] / total * 100 if total else 0
+        fig.add_trace(go.Bar(
+            x=[pct], y=["Visitas"], orientation="h", name=tipo,
+            marker_color=SITE_COLORS.get(tipo, "#94A3B8"),
+            text=f"{tipo}<br>{pct:.1f}%",
+            textposition="inside", insidetextanchor="middle",
+            hovertemplate=f"<b>{tipo}</b><br>{pct:.1f}%  ({row['NÚMERO DE VISITAS']:,.0f})<extra></extra>",
+        ))
+    fig.update_layout(
+        barmode="stack",
+        title="Visitas por tipo de sitio",
+        height=370,
+        xaxis=dict(range=[0, 100], visible=False),
+        yaxis=dict(visible=False),
+        legend=dict(orientation="h", y=-0.15, x=0, bgcolor="rgba(0,0,0,0)"),
+        margin=dict(t=40, b=70, l=10, r=10),
+        paper_bgcolor="rgba(0,0,0,0)", font_color="#CBD5E1",
     )
-    fig.update_traces(textinfo="percent+label", textfont_size=13)
-    fig.update_layout(height=370, showlegend=False, paper_bgcolor="rgba(0,0,0,0)", font_color="#CBD5E1")
     return fig
 
 
-def fig_visitor_type_donut(d: pl.DataFrame) -> go.Figure:
+def fig_visitor_type_bar(d: pl.DataFrame) -> go.Figure:
     vtype = (
         d.group_by("TIPO DE VISITANTES")
         .agg(pl.col("NÚMERO DE VISITAS").sum())
-        .sort("NÚMERO DE VISITAS", descending=True)
+        .sort("NÚMERO DE VISITAS")
         .with_columns(pl.col("TIPO DE VISITANTES").replace(VISITOR_SHORT).alias("label"))
     )
-    fig = px.pie(
-        vtype, names="label", values="NÚMERO DE VISITAS",
-        hole=0.5, title="Tipo de visitante",
+    total = int(vtype["NÚMERO DE VISITAS"].sum())
+    ns    = vtype["NÚMERO DE VISITAS"].to_list()
+    pcts  = [n / total * 100 for n in ns]
+    fig = go.Figure(go.Bar(
+        x=ns, y=vtype["label"].to_list(), orientation="h",
+        marker_color="#2E86AB",
+        text=[f"{p:.1f}%" for p in pcts],
+        textposition="outside",
+        hovertemplate="<b>%{y}</b><br>%{x:,.0f} visitas (%{text})<extra></extra>",
+    ))
+    fig.update_layout(
+        title="Tipo de visitante",
+        height=370,
+        xaxis=dict(gridcolor="#334155"),
+        yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+        showlegend=False,
+        margin=dict(t=40, b=40, l=10, r=60),
+        paper_bgcolor="rgba(0,0,0,0)", font_color="#CBD5E1",
     )
-    fig.update_traces(textinfo="percent+label", textfont_size=11)
-    fig.update_layout(height=370, showlegend=False, paper_bgcolor="rgba(0,0,0,0)", font_color="#CBD5E1")
     return fig
 
 
@@ -775,8 +803,8 @@ def update_all(year_range, centro):
         fig_states_map(d),
         fig_annual_trend(d),
         fig_yoy_change(d),
-        fig_site_donut(d),
-        fig_visitor_type_donut(d),
+        fig_site_bar(d),
+        fig_visitor_type_bar(d),
         fig_top_states(d),
         fig_foreign_ratio(d),
         fig_top_sites(d),

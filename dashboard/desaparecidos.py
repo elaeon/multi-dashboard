@@ -143,22 +143,32 @@ def fig_monthly(d: pl.DataFrame) -> go.Figure:
 
 
 def fig_sex(d: pl.DataFrame) -> go.Figure:
-    counts = d.group_by("sexo_cat").agg(pl.len().alias("n")).sort("sexo_cat")
+    counts = (
+        d.group_by("sexo_cat").agg(pl.len().alias("n"))
+        .sort("n", descending=True)
+    )
     if len(counts) == 0:
         return go.Figure()
+    total = int(counts["n"].sum())
     labels = counts["sexo_cat"].to_list()
-    fig = go.Figure(go.Pie(
-        labels=labels,
-        values=counts["n"].to_list(),
-        hole=0.5,
-        textinfo="label+percent",
-        marker_colors=[SEXO_COLORS.get(s, "#64748B") for s in labels],
+    ns     = counts["n"].to_list()
+    pcts   = [n / total * 100 for n in ns]
+    colors = [SEXO_COLORS.get(s, "#64748B") for s in labels]
+    fig = go.Figure(go.Bar(
+        x=ns, y=labels, orientation="h",
+        marker_color=colors,
+        text=[f"{p:.1f}%  ({n:,})" for p, n in zip(pcts, ns)],
+        textposition="outside",
+        hovertemplate="<b>%{y}</b><br>Casos: %{x:,}<extra></extra>",
     ))
     fig.update_layout(
         title="Distribución por sexo",
         height=360,
+        xaxis=dict(gridcolor="#334155"),
+        yaxis=dict(gridcolor="rgba(0,0,0,0)"),
         showlegend=False,
-        **CHART_LAYOUT,
+        **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
+        margin=dict(t=40, b=40, l=10, r=150),
     )
     return fig
 

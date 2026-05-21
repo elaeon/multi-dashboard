@@ -171,24 +171,114 @@ def fig_map(states_d: pl.DataFrame, year: int) -> go.Figure:
     return fig
 
 
-def fig_states_rank(states_d: pl.DataFrame) -> go.Figure:
-    agg = (
-        states_d.group_by("ENTIDAD")
-        .agg(pl.col("TASA_TOTAL").mean().alias("tasa_avg"))
-        .sort("tasa_avg")
-    )
-    fig = px.bar(
-        agg, x="tasa_avg", y="ENTIDAD", orientation="h",
-        color="tasa_avg", color_continuous_scale="Reds", range_color=[0, 20],
-        labels={"tasa_avg": "Tasa promedio por 100k", "ENTIDAD": ""},
-        title="Entidades por tasa promedio de suicidio",
-    )
+def fig_slope_states(states_d: pl.DataFrame) -> go.Figure:
+    years = sorted(states_d["AÑO"].unique().to_list())
+    if len(years) < 2:
+        return go.Figure()
+    y0, y1 = years[0], years[-1]
+
+    d0 = (states_d.filter(pl.col("AÑO") == y0)
+          .select(["ENTIDAD", "TASA_TOTAL"]).rename({"TASA_TOTAL": "r0"}))
+    d1 = (states_d.filter(pl.col("AÑO") == y1)
+          .select(["ENTIDAD", "TASA_TOTAL"]).rename({"TASA_TOTAL": "r1"}))
+
+    result = (d0.join(d1, on="ENTIDAD").drop_nulls()
+              .with_columns((pl.col("r1") - pl.col("r0")).alias("delta"))
+              .sort("r1"))
+
+    fig = go.Figure()
+    for row in result.iter_rows(named=True):
+        color = "#E84855" if row["delta"] > 0 else "#3BB273"
+        fig.add_trace(go.Scatter(
+            x=[str(y0), str(y1)],
+            y=[row["r0"], row["r1"]],
+            mode="lines+markers",
+            line=dict(color=color, width=1.5),
+            marker=dict(color=color, size=7),
+            showlegend=False,
+            hovertemplate=f"<b>{row['ENTIDAD']}</b><br>%{{x}}: %{{y:.1f}}/100k<br>Δ: {'+' if row['delta'] > 0 else ''}{row['delta']:.1f}<extra></extra>",
+        ))
+
+    n_up = result.filter(pl.col("delta") > 0).height
+    n_dn = result.filter(pl.col("delta") <= 0).height
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines+markers",
+                             line=dict(color="#E84855"), marker=dict(color="#E84855"),
+                             name=f"▲ Aumentó ({n_up})"))
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines+markers",
+                             line=dict(color="#3BB273"), marker=dict(color="#3BB273"),
+                             name=f"▼ Disminuyó ({n_dn})"))
     fig.update_layout(
-        height=max(300, len(agg) * 24 + 80),
-        showlegend=False, coloraxis_showscale=False,
-        margin=dict(t=40, b=40, l=10, r=10),
+        title=f"Cambio en tasa de suicidio por entidad: {y0} → {y1}",
+        height=420,
+        legend=dict(orientation="h", y=-0.15, x=0),
+        margin=dict(t=50, b=60, l=10, r=10),
         **CHART_LAYOUT,
     )
+    fig.update_xaxes(type="category", gridcolor="rgba(0,0,0,0)")
+    fig.update_yaxes(ticksuffix="/100k", title="Tasa por 100,000 hab.")
+    return fig
+
+
+def fig_states_dotrange(states_d: pl.DataFrame) -> go.Figure:
+    agg = (
+        states_d.group_by("ENTIDAD")
+        .agg(
+            pl.col("TASA_TOTAL").mean().round(2).alias("mean"),
+            pl.col("TASA_TOTAL").min().round(2).alias("min"),
+            pl.col("TASA_TOTAL").max().round(2).alias("max"),
+        )
+        .drop_nulls()
+        .sort("mean")
+    )
+    if agg.is_empty():
+        return go.Figure()
+
+    states = agg["ENTIDAD"].to_list()
+    means  = agg["mean"].to_list()
+    mins   = agg["min"].to_list()
+    maxs   = agg["max"].to_list()
+    colors = ["#E84855" if m >= 10 else "#F4A261" if m >= 5 else "#3BB273" for m in means]
+
+    x_lines, y_lines = [], []
+    for mn, mx, s in zip(mins, maxs, states):
+        x_lines += [mn, mx, None]
+        y_lines += [s, s, None]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x_lines, y=y_lines,
+        mode="lines", line=dict(color="#334155", width=2),
+        showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=mins, y=states, mode="markers",
+        marker=dict(symbol="line-ew", size=8, color="#475569",
+                    line=dict(width=2, color="#475569")),
+        name="Mínimo",
+        hovertemplate="<b>%{y}</b><br>Mín: %{x:.1f}/100k<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=maxs, y=states, mode="markers",
+        marker=dict(symbol="line-ew", size=8, color="#475569",
+                    line=dict(width=2, color="#475569")),
+        name="Máximo",
+        hovertemplate="<b>%{y}</b><br>Máx: %{x:.1f}/100k<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=means, y=states, mode="markers",
+        marker=dict(color=colors, size=10),
+        name="Promedio",
+        hovertemplate="<b>%{y}</b><br>Prom: %{x:.1f}/100k<extra></extra>",
+    ))
+    fig.update_layout(
+        title="Tasa de suicidio por entidad: promedio y rango histórico",
+        height=max(300, len(states) * 24 + 80),
+        legend=dict(orientation="h", y=1.05, x=0, bgcolor="rgba(0,0,0,0)"),
+        margin=dict(t=60, b=40, l=10, r=10),
+        **CHART_LAYOUT,
+    )
+    fig.update_xaxes(gridcolor="#334155", ticksuffix="/100k")
+    fig.update_yaxes(gridcolor="rgba(0,0,0,0)")
     return fig
 
 
@@ -263,10 +353,15 @@ app.layout = dbc.Container(
             dbc.Col(dcc.Graph(id="gender-bar"),  width=5),
         ], className="mb-4"),
 
-        # Map + state ranking
+        # Map + slope chart
         dbc.Row([
             dbc.Col(dcc.Graph(id="map-chart"),   width=6),
             dbc.Col(dcc.Graph(id="states-rank"), width=6),
+        ], className="mb-4"),
+
+        # Dot-and-range ranking
+        dbc.Row([
+            dbc.Col(dcc.Graph(id="states-dotrange"), width=12),
         ]),
     ],
     fluid=True,
@@ -276,12 +371,13 @@ app.layout = dbc.Container(
 
 # ── callback ──────────────────────────────────────────────────────────────────
 @app.callback(
-    Output("kpi-row",      "children"),
-    Output("extremes-row", "children"),
-    Output("trend-chart",  "figure"),
-    Output("gender-bar",   "figure"),
-    Output("map-chart",    "figure"),
-    Output("states-rank",  "figure"),
+    Output("kpi-row",          "children"),
+    Output("extremes-row",     "children"),
+    Output("trend-chart",      "figure"),
+    Output("gender-bar",       "figure"),
+    Output("map-chart",        "figure"),
+    Output("states-rank",      "figure"),
+    Output("states-dotrange",  "figure"),
     Input("year-range",   "value"),
     Input("entidad-dd",   "value"),
 )
@@ -336,7 +432,8 @@ def update_all(year_range, entidad):
         fig_trend(d_entity),
         fig_gender_bar(d_entity),
         fig_map(d_states, y1),
-        fig_states_rank(d_states),
+        fig_slope_states(d_states),
+        fig_states_dotrange(d_states),
     )
 
 

@@ -141,7 +141,7 @@ def fig_temp_seasonality(d: pl.DataFrame) -> go.Figure:
 
 
 def fig_warming_delta() -> go.Figure:
-    """Static chart — shows all states, not filtered."""
+    """Dumbbell plot: open dot = baseline 1985-1994, filled dot = 2015-2024."""
     recent = (
         df.filter(pl.col("CVE_ENT") != 0)
         .filter(pl.col("anio").is_between(2015, 2024))
@@ -152,26 +152,48 @@ def fig_warming_delta() -> go.Figure:
         _baseline.filter(pl.col("ENTIDAD") != "Nacional")
         .join(recent, on="ENTIDAD")
         .with_columns((pl.col("recent") - pl.col("baseline_media")).round(2).alias("delta"))
-        .sort("delta", descending=True)
+        .sort("delta")
     )
-    deltas = result["delta"].to_list()
-    estados_list = result["ENTIDAD"].to_list()
-    colors = ["#E84855" if d >= 2 else "#F4A261" if d >= 1 else "#3BB273" for d in deltas]
-    fig = go.Figure(go.Bar(
-        x=deltas, y=estados_list, orientation="h",
-        marker_color=colors,
-        text=[f"+{d:.2f}°C" for d in deltas],
-        textposition="outside",
-        hovertemplate="<b>%{y}</b><br>Δ temperatura: +%{x:.2f}°C<extra></extra>",
+    states_list = result["ENTIDAD"].to_list()
+    baselines   = result["baseline_media"].to_list()
+    recents     = result["recent"].to_list()
+    deltas      = result["delta"].to_list()
+    colors      = ["#E84855" if d >= 2 else "#F4A261" if d >= 1 else "#3BB273" for d in deltas]
+
+    x_lines, y_lines = [], []
+    for b, r, s in zip(baselines, recents, states_list):
+        x_lines += [b, r, None]
+        y_lines += [s, s, None]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x_lines, y=y_lines,
+        mode="lines",
+        line=dict(color="#475569", width=1.5),
+        showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=baselines, y=states_list,
+        mode="markers", name="1985–1994",
+        marker=dict(color="#64748B", size=10, symbol="circle-open",
+                    line=dict(color="#64748B", width=2)),
+        hovertemplate="<b>%{y}</b><br>Base 1985–1994: %{x:.2f}°C<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=recents, y=states_list,
+        mode="markers", name="2015–2024",
+        marker=dict(color=colors, size=10),
+        customdata=deltas,
+        hovertemplate="<b>%{y}</b><br>Rec. 2015–2024: %{x:.2f}°C<br>Δ: +%{customdata:.2f}°C<extra></extra>",
     ))
     fig.update_layout(
-        title="Calentamiento por estado: promedio 2015–2024 vs 1985–1994",
-        height=max(340, len(estados_list) * 28 + 80),
-        xaxis=dict(range=[0, 4.2], gridcolor="#334155", ticksuffix="°C",
-                   title="Δ Temperatura media (°C)"),
-        yaxis=dict(gridcolor="rgba(0,0,0,0)", autorange="reversed"),
+        title="Calentamiento por estado: 1985–1994 → 2015–2024",
+        height=max(340, len(states_list) * 22 + 100),
+        xaxis=dict(gridcolor="#334155", ticksuffix="°C", title="Temperatura media (°C)"),
+        yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+        legend=dict(orientation="h", y=1.05, x=0, bgcolor="rgba(0,0,0,0)"),
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
-        margin=dict(t=40, b=40, l=10, r=80),
+        margin=dict(t=60, b=40, l=10, r=20),
     )
     return fig
 

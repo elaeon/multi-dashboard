@@ -121,21 +121,39 @@ def fig_entidad_bar(d_eg: pl.DataFrame, selected: str) -> go.Figure:
     return fig
 
 
-def fig_tipo_donut(d: pl.DataFrame) -> go.Figure:
-    agg = d.group_by("tipo_beca").agg(pl.col("monto").sum()).sort("tipo_beca")
+def fig_tipo_bar(d: pl.DataFrame) -> go.Figure:
+    agg = d.group_by("tipo_beca").agg(pl.col("monto").sum(), pl.col("n_becas").sum()).sort("tipo_beca")
     if agg.is_empty():
-        return go.Figure().update_layout(title="Sin datos", height=320, **CHART_LAYOUT)
-    colors = [TIPO_COLORS.get(t, COLOR_MAIN) for t in agg["tipo_beca"].to_list()]
-    fig = go.Figure(go.Pie(
-        labels=agg["tipo_beca"].to_list(), values=agg["monto"].to_list(),
-        hole=0.5, marker_colors=colors,
-        textinfo="label+percent",
-        hovertemplate="<b>%{label}</b><br>$%{value:,.0f}<extra></extra>",
-    ))
+        return go.Figure().update_layout(title="Sin datos", height=240, **CHART_LAYOUT)
+    total_m = float(agg["monto"].sum())
+    total_b = int(agg["n_becas"].sum())
+    fig = go.Figure()
+    for row in agg.iter_rows(named=True):
+        pct_m = row["monto"] / total_m * 100 if total_m else 0
+        pct_b = row["n_becas"] / total_b * 100 if total_b else 0
+        color = TIPO_COLORS.get(row["tipo_beca"], COLOR_MAIN)
+        fig.add_trace(go.Bar(
+            x=[pct_m], y=["Monto"], orientation="h", name=row["tipo_beca"],
+            marker_color=color,
+            text=f"{pct_m:.1f}%<br>${row['monto']/1e6:.1f}M",
+            textposition="inside", insidetextanchor="middle",
+            hovertemplate=f"<b>{row['tipo_beca']}</b><br>{pct_m:.1f}% del monto<br>${row['monto']:,.0f}<extra></extra>",
+        ))
+        fig.add_trace(go.Bar(
+            x=[pct_b], y=["Becas"], orientation="h", name=row["tipo_beca"],
+            marker_color=color, showlegend=False,
+            text=f"{pct_b:.1f}%<br>{row['n_becas']:,}",
+            textposition="inside", insidetextanchor="middle",
+            hovertemplate=f"<b>{row['tipo_beca']}</b><br>{pct_b:.1f}% de becas<br>{row['n_becas']:,} becas<extra></extra>",
+        ))
     fig.update_layout(
-        title="Monto por tipo de beca",
-        height=320, showlegend=False,
-        margin=dict(t=40, b=20, l=10, r=10),
+        barmode="stack",
+        title="Distribución por tipo de beca",
+        height=240,
+        xaxis=dict(range=[0, 100], visible=False),
+        yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+        legend=dict(orientation="h", y=-0.25, x=0, bgcolor="rgba(0,0,0,0)"),
+        margin=dict(t=40, b=70, l=10, r=10),
         paper_bgcolor="rgba(0,0,0,0)", font_color="#CBD5E1",
     )
     return fig
@@ -402,7 +420,7 @@ def update_all(ent, tipo):
     return (
         kpis,
         fig_entidad_bar(d_eg, ent),
-        fig_tipo_donut(d_e),
+        fig_tipo_bar(d_e),
         fig_anio_bar(d_e),
         fig_avg_monto_tipo(d_e),
         fig_yoy_bar(d_eg),

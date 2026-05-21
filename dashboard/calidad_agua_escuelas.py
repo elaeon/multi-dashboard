@@ -261,27 +261,110 @@ def fig_supply_risk(d: pl.DataFrame) -> go.Figure:
     return fig
 
 
-def fig_supply_donut(d: pl.DataFrame) -> go.Figure:
-    counts = (
-        d.filter(pl.col("abastecimiento") != "Desconocido")
-        .group_by("abastecimiento").agg(pl.len().alias("n"))
-        .sort("n", descending=True)
-    )
-    if len(counts) == 0:
+def fig_supply_breakdown(d: pl.DataFrame) -> go.Figure:
+    base = d.filter(pl.col("riesgo_bact").is_not_null() & (pl.col("abastecimiento") != "Desconocido"))
+    if len(base) == 0:
         return go.Figure()
-    palette = ["#2E86AB", "#3BB273", "#F4A261", "#E84855", "#94A3B8", "#CBD5E1", "#64748B"]
-    fig = go.Figure(go.Pie(
-        labels=counts["abastecimiento"].to_list(),
-        values=counts["n"].to_list(),
-        hole=0.5,
-        textinfo="label+percent",
-        marker_colors=palette,
-    ))
+
+    totals_df = base.group_by("abastecimiento").agg(pl.len().alias("total"))
+    total_map = {r["abastecimiento"]: r["total"] for r in totals_df.iter_rows(named=True)}
+
+    alto_df = (
+        base.filter(pl.col("riesgo_bact") == "Alto riesgo")
+        .group_by("abastecimiento").agg(pl.len().alias("alto"))
+    )
+    alto_map = {r["abastecimiento"]: r["alto"] for r in alto_df.iter_rows(named=True)}
+
+    supply_order = sorted(
+        total_map.keys(),
+        key=lambda s: alto_map.get(s, 0) / total_map[s],
+        reverse=True,
+    )
+
+    counts_map = {
+        (r["abastecimiento"], r["riesgo_bact"]): r["n"]
+        for r in base.group_by(["abastecimiento", "riesgo_bact"])
+        .agg(pl.len().alias("n")).iter_rows(named=True)
+    }
+
+    fig = go.Figure()
+    for risk in ["Alto riesgo", "Intermedio", "Bajo riesgo"]:
+        pcts, ns_list = [], []
+        for s in supply_order:
+            n = counts_map.get((s, risk), 0)
+            pcts.append(round(n / total_map[s] * 100, 1))
+            ns_list.append(n)
+        fig.add_trace(go.Bar(
+            name=risk,
+            y=supply_order, x=pcts, orientation="h",
+            marker_color=RISK_COLORS[risk],
+            text=[f"{p:.0f}%" if p > 8 else "" for p in pcts],
+            textposition="inside",
+            customdata=ns_list,
+            hovertemplate=f"<b>{risk}</b><br>%{{y}}: %{{x:.1f}}%  (n=%{{customdata}})<extra></extra>",
+        ))
+
+    annotations = [
+        dict(x=103, y=s, text=f"n={total_map[s]:,}",
+             xref="x", yref="y", showarrow=False,
+             font=dict(size=10, color="#94A3B8"), xanchor="left")
+        for s in supply_order
+    ]
     fig.update_layout(
-        title="Distribución por tipo de abastecimiento",
-        height=360,
-        showlegend=False,
-        **CHART_LAYOUT,
+        barmode="stack",
+        title="Distribución de riesgo por tipo de abastecimiento",
+        height=max(280, len(supply_order) * 40 + 80),
+        xaxis=dict(range=[0, 120], gridcolor="#334155", ticksuffix="%"),
+        yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+        legend=dict(orientation="h", y=1.08, x=0, bgcolor="rgba(0,0,0,0)"),
+        annotations=annotations,
+        **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
+        margin=dict(t=60, b=40, l=10, r=50),
+    )
+    return fig
+
+
+def fig_symbol_map(d: pl.DataFrame) -> go.Figure:
+    geo = d.with_columns(
+        pl.col("Latitud").cast(pl.Float64, strict=False).alias("lat"),
+        pl.col("Longitud").cast(pl.Float64, strict=False).alias("lon"),
+    ).filter(
+        pl.col("lat").is_between(14, 33)
+        & pl.col("lon").is_between(-118, -86)
+        & pl.col("riesgo_bact").is_not_null()
+    )
+    if len(geo) == 0:
+        return go.Figure()
+
+    center_lat = float(geo["lat"].mean())
+    center_lon = float(geo["lon"].mean())
+
+    fig = go.Figure()
+    for risk, color in RISK_COLORS.items():
+        subset = geo.filter(pl.col("riesgo_bact") == risk)
+        if len(subset) == 0:
+            continue
+        escuelas   = subset["Escuela"].fill_null("Sin nombre").to_list()
+        municipios = subset["Municipio"].fill_null("—").to_list()
+        fig.add_trace(go.Scattermap(
+            lat=subset["lat"].to_list(),
+            lon=subset["lon"].to_list(),
+            mode="markers",
+            marker=dict(size=7, color=color, opacity=0.7),
+            name=risk,
+            customdata=list(zip(escuelas, municipios)),
+            hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]}<extra></extra>",
+        ))
+
+    fig.update_layout(
+        map=dict(style="carto-darkmatter",
+                 center=dict(lat=center_lat, lon=center_lon), zoom=6),
+        title="Ubicación de escuelas monitoreadas",
+        height=500,
+        margin=dict(t=40, b=10, l=0, r=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        font_color="#CBD5E1",
+        legend=dict(orientation="h", y=-0.05, x=0, bgcolor="rgba(0,0,0,0)"),
     )
     return fig
 
@@ -367,6 +450,9 @@ app.layout = html.Div(
                         dbc.Col(dcc.Graph(id="graph-trend"), md=7),
                         dbc.Col(dcc.Graph(id="graph-muni"), md=5),
                     ]),
+                    dbc.Row(className="g-3", children=[
+                        dbc.Col(dcc.Graph(id="graph-map"), md=12),
+                    ]),
                 ]),
             ]),
 
@@ -409,6 +495,7 @@ _CARD_STYLE = CARD_STYLE
     Output("kpi-row", "children"),
     Output("graph-trend", "figure"),
     Output("graph-muni", "figure"),
+    Output("graph-map", "figure"),
     Input("year-filter", "value"),
     Input("muni-filter", "value"),
 )
@@ -426,7 +513,7 @@ def update_panorama(year, muni):
         kpi_card("Agua segura (Bajo riesgo)", f"{pct_bajo:.1f}%", "#3BB273"),
         kpi_card("Municipios monitoreados", f"{n_munis:,}", "#2E86AB"),
     ]
-    return kpis, fig_trend_year(d), fig_municipio_risk(d)
+    return kpis, fig_trend_year(d), fig_municipio_risk(d), fig_symbol_map(d)
 
 
 @app.callback(
@@ -442,7 +529,7 @@ def update_supply(year, muni):
         d = d.filter(pl.col("Año") == int(year))
     if muni != "all":
         d = d.filter(pl.col("Municipio") == muni)
-    return fig_supply_risk(d), fig_supply_donut(d), fig_ecoli_dist(d)
+    return fig_supply_risk(d), fig_supply_breakdown(d), fig_ecoli_dist(d)
 
 
 if __name__ == "__main__":
