@@ -6,3 +6,8 @@
 "desaparecidos","https://datamx.io/dataset/personas-desaparecidas-y-no-localizadas-en-mexico"
 "suicidios_entidad","https://datamx.io/dataset/suicidios-registrados-en-mexico-por-entidad-1990-2023"
 "becas_conalep","https://www.datos.gob.mx/dataset/numero_becas_sistema_conalep"
+"censo_poblacion_vivienda","https://www.inegi.org.mx/programas/ccpv/2020/#datos_abiertos"
+"puertos","https://www.datos.gob.mx/dataset/estadistica_mensual_movimiento_portuario_contenedores"
+"puertos","https://www.datos.gob.mx/dataset/estadistica_mensual_movimiento_portuario_cruceros"
+"puertos","https://www.datos.gob.mx/dataset/estadistica_mensual_movimiento_portuario_carga_arribo_buques"
+"incidencia_delictiva","https://www.gob.mx/sesnsp/documentos/historico-de-incidencia-delictiva-del-fuero-comun?idiom=es"
