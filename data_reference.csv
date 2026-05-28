@@ -12,3 +12,5 @@
 "puertos","https://www.datos.gob.mx/dataset/estadistica_mensual_movimiento_portuario_carga_arribo_buques"
 "incidencia_delictiva","https://www.gob.mx/sesnsp/documentos/historico-de-incidencia-delictiva-del-fuero-comun?idiom=es"
 "becas_cnbbbj","https://www.datos.gob.mx/organization/cnbbbj?q=&sort=metadata_modified+desc&page"
+"mortalidad","https://www.inegi.org.mx/temas/mortalidad/"
+"unam_egresos","https://web.planeacion.unam.mx/agenda/"
