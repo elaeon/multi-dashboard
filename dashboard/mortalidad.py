@@ -211,6 +211,16 @@ TAB_STYLE = {"backgroundColor": "#0F172A", "color": "#94A3B8", "borderTop": "non
 TAB_SEL   = {"backgroundColor": "#1E293B", "color": "#F8FAFC",
              "borderTop": "2px solid #2E86AB", "fontWeight": "600"}
 
+GRAPH_CONFIG = {
+    "displayModeBar": "hover",
+    "modeBarButtonsToRemove": [
+        "zoom2d", "pan2d", "select2d", "lasso2d",
+        "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d",
+        "hoverClosestCartesian", "hoverCompareCartesian", "toggleSpikelines",
+    ],
+    "toImageButtonOptions": {"format": "png", "scale": 2},
+}
+
 COLOR_TOTAL   = "#3BB273"
 COLOR_HOMBRES = "#2E86AB"
 COLOR_MUJERES = "#F4A261"
@@ -295,6 +305,102 @@ def fig_ev_map(d: pl.DataFrame) -> go.Figure:
         height=500, title=f"Esperanza de vida por entidad — 2026 ({sexo})",
         coloraxis_colorbar=dict(title="Años"),
         margin=dict(t=50, b=10, l=0, r=0),
+    )
+    return fig
+
+
+def fig_ev_progress(d: pl.DataFrame) -> go.Figure:
+    sexo = d["sexo"][0]
+    y0, y1 = 2010, 2026
+    pre  = d.filter((pl.col("año") == y0) & (pl.col("entidad") != NACIONAL_EV)).rename({"valor": "v0"})
+    post = d.filter((pl.col("año") == y1) & (pl.col("entidad") != NACIONAL_EV)).rename({"valor": "v1"})
+    comp = (
+        pre.join(post, on=["entidad", "entidad_geo", "sexo"])
+        .with_columns(((pl.col("v1") - pl.col("v0")).round(2)).alias("delta"))
+        .sort("delta")
+    )
+    nac_v0 = float(df_ev.filter(
+        (pl.col("entidad") == NACIONAL_EV) & (pl.col("año") == y0) & (pl.col("sexo") == sexo)
+    )["valor"][0])
+    nac_v1 = float(df_ev.filter(
+        (pl.col("entidad") == NACIONAL_EV) & (pl.col("año") == y1) & (pl.col("sexo") == sexo)
+    )["valor"][0])
+    nac_delta = round(nac_v1 - nac_v0, 2)
+    v0_vals = comp["v0"].to_list()
+    fig = go.Figure(go.Bar(
+        x=comp["delta"].to_list(), y=comp["entidad"].to_list(),
+        orientation="h",
+        marker=dict(
+            color=v0_vals,
+            colorscale="RdYlGn",
+            cmin=min(v0_vals) - 0.5,
+            cmax=max(v0_vals) + 0.5,
+            showscale=True,
+            colorbar=dict(
+                title=dict(text="EV 2010<br>(línea base)", side="right",
+                           font=dict(color="#94A3B8", size=11)),
+                thickness=14, x=1.01,
+                tickfont=dict(color="#CBD5E1"),
+            ),
+        ),
+        text=comp["delta"].to_list(), textposition="outside", texttemplate="%{x:+.2f}",
+        customdata=list(zip(v0_vals, comp["v1"].to_list())),
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "2010: %{customdata[0]:.2f} años<br>"
+            "2026: %{customdata[1]:.2f} años<br>"
+            "Ganancia: %{x:+.2f} años<extra></extra>"
+        ),
+    ))
+    fig.add_vline(x=nac_delta, line_width=1.5, line_dash="dot", line_color="#94A3B8",
+                  annotation_text=f"Nacional {nac_delta:+.2f}",
+                  annotation_position="top right", annotation_font_color="#94A3B8")
+    fig.update_layout(
+        **CHART_LAYOUT, height=CHART_H_S,
+        title=f"Ganancia en esperanza de vida por entidad — 2010 → 2026 ({sexo})<br>"
+              f"<sup style='color:#64748B'>Color = EV en 2010: verde oscuro = base alta (más difícil mejorar), rojo = base baja</sup>",
+        xaxis=dict(gridcolor=GRID, title="Años ganados"),
+        yaxis=dict(gridcolor=GRID_NONE),
+        margin=dict(t=65, b=40, l=185, r=80),
+    )
+    return fig
+
+
+def fig_ev_scatter(d: pl.DataFrame) -> go.Figure:
+    sexo = d["sexo"][0]
+    y0, y1 = 2010, 2026
+    pre  = d.filter((pl.col("año") == y0) & (pl.col("entidad") != NACIONAL_EV)).rename({"valor": "v0"})
+    post = d.filter((pl.col("año") == y1) & (pl.col("entidad") != NACIONAL_EV)).rename({"valor": "v1"})
+    comp = (
+        pre.join(post, on=["entidad", "entidad_geo", "sexo"])
+        .with_columns(((pl.col("v1") - pl.col("v0")).round(2)).alias("delta"))
+    )
+    mean_ev = float(comp["v1"].mean())
+    fig = go.Figure(go.Scatter(
+        x=comp["delta"].to_list(), y=comp["v1"].to_list(),
+        mode="markers+text",
+        text=comp["entidad"].to_list(),
+        textposition="top center",
+        textfont=dict(size=9, color="#94A3B8"),
+        marker=dict(color=COLORS[sexo], size=9, opacity=0.85,
+                    line=dict(color="#0F172A", width=1)),
+        customdata=comp["v0"].to_list(),
+        hovertemplate=(
+            "<b>%{text}</b><br>"
+            "2010: %{customdata:.2f} años<br>"
+            "2026: %{y:.2f} años<br>"
+            "Ganancia: %{x:+.2f} años<extra></extra>"
+        ),
+    ))
+    fig.add_hline(y=mean_ev, line_width=1.5, line_dash="dot", line_color="#94A3B8",
+                  annotation_text=f"Media {mean_ev:.2f} años",
+                  annotation_position="right", annotation_font_color="#94A3B8")
+    fig.update_layout(
+        **CHART_LAYOUT, height=520,
+        title=f"Esperanza de vida 2026 vs. ganancia 2010→2026 por entidad ({sexo})",
+        xaxis=dict(gridcolor=GRID, title="Ganancia (años)"),
+        yaxis=dict(gridcolor=GRID, title="Esperanza de vida 2026 (años)"),
+        margin=dict(t=50, b=50, l=60, r=20),
     )
     return fig
 
@@ -533,128 +639,107 @@ def fig_dm_covid_state(d: pl.DataFrame) -> go.Figure:
     return fig
 
 
-# ── figure factory — anomaly analysis ────────────────────────────────────────
-def fig_anomaly() -> go.Figure:
-    """Two-panel: (1) observed vs expected trend corridor, (2) YoY % with σ-bands."""
+# ── figure factories — anomaly analysis ──────────────────────────────────────
+def _anomaly_base():
     nac   = df_def.filter((pl.col("entidad") == "Total") & (pl.col("sexo") == "Total")).sort("año")
     vals  = [float(v) for v in nac["valor"].to_list()]
     years = nac["año"].to_list()
-
-    # Year-over-year growth rates
-    yoy = [(vals[i] - vals[i-1]) / vals[i-1] * 100 for i in range(1, len(vals))]
-    yrs = years[1:]
-
-    # Pre-COVID baseline (2011-2019)
+    yoy   = [(vals[i] - vals[i-1]) / vals[i-1] * 100 for i in range(1, len(vals))]
+    yrs   = years[1:]
     g_pre = [g for y, g in zip(yrs, yoy) if y <= 2019]
     mu    = sum(g_pre) / len(g_pre)
     sd    = (sum((g - mu) ** 2 for g in g_pre) / (len(g_pre) - 1)) ** 0.5
     z     = [(g - mu) / sd for g in yoy]
-
-    # Expected trajectory compounded from 2010 base with ±σ corridors
-    base = vals[0]
-    exp  = [base * (1 + mu/100) ** (y - years[0]) for y in years]
-    eu1  = [base * (1 + (mu + sd) / 100)   ** (y - years[0]) for y in years]
-    el1  = [base * (1 + (mu - sd) / 100)   ** (y - years[0]) for y in years]
-    eu2  = [base * (1 + (mu + 2*sd) / 100) ** (y - years[0]) for y in years]
-    el2  = [base * (1 + (mu - 2*sd) / 100) ** (y - years[0]) for y in years]
-
-    # Excess deaths vs expected trajectory
+    base  = vals[0]
+    exp   = [base * (1 + mu/100) ** (y - years[0]) for y in years]
+    eu1   = [base * (1 + (mu + sd)   / 100) ** (y - years[0]) for y in years]
+    el1   = [base * (1 + (mu - sd)   / 100) ** (y - years[0]) for y in years]
+    eu2   = [base * (1 + (mu + 2*sd) / 100) ** (y - years[0]) for y in years]
+    el2   = [base * (1 + (mu - 2*sd) / 100) ** (y - years[0]) for y in years]
     excess = {y: v - e for y, v, e in zip(years, vals, exp)}
+    return nac, vals, years, yoy, yrs, mu, sd, z, exp, eu1, el1, eu2, el2, excess
 
-    fig = make_subplots(
-        rows=2, cols=1,
-        subplot_titles=[
-            "Defunciones observadas vs. trayectoria esperada (baseline 2010–2019)",
-            f"Crecimiento anual (YoY %)  —  media pre-COVID: {mu:.1f}%  σ={sd:.1f}pp",
-        ],
-        row_heights=[0.55, 0.45],
-        vertical_spacing=0.14,
-    )
 
-    # ── Panel 1: corridors ────────────────────────────────────────────────
+def fig_anomaly_trend() -> go.Figure:
+    nac, vals, years, _, _, mu, sd, _, exp, eu1, el1, eu2, el2, excess = _anomaly_base()
+    fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=years + years[::-1], y=eu2 + el2[::-1],
         fill="toself", fillcolor="rgba(46,134,171,0.10)",
         line=dict(width=0), name="±2σ corredor", hoverinfo="skip",
-    ), row=1, col=1)
+    ))
     fig.add_trace(go.Scatter(
         x=years + years[::-1], y=eu1 + el1[::-1],
         fill="toself", fillcolor="rgba(46,134,171,0.20)",
         line=dict(width=0), name="±1σ corredor", hoverinfo="skip",
-    ), row=1, col=1)
+    ))
     fig.add_trace(go.Scatter(
         x=years, y=exp, mode="lines", name="Tendencia esperada",
-        line=dict(color="#2E86AB", dash="dash", width=1.5),
+        line=dict(color="#2E86AB", dash="dash", width=1.5, shape="spline", smoothing=1.0),
         hovertemplate="%{x}: %{y:,.0f}<extra>Esperado</extra>",
-    ), row=1, col=1)
+    ))
     fig.add_trace(go.Scatter(
         x=years, y=vals, mode="lines+markers", name="Observado",
-        line=dict(color="#CBD5E1", width=2.5), marker=dict(size=5),
+        line=dict(color="#CBD5E1", width=3.5, shape="spline", smoothing=0.8),
+        marker=dict(size=6),
         hovertemplate="%{x}: %{y:,.0f}  (exceso %{customdata:+,.0f})<extra></extra>",
         customdata=[excess[y] for y in years],
-    ), row=1, col=1)
-
-    # Highlight anomalous period
-    fig.add_vrect(x0=2019.5, x1=2021.5,
-                  fillcolor="rgba(232,72,85,0.08)", line_width=0, row=1, col=1)
-
+    ))
+    fig.add_vrect(x0=2019.5, x1=2021.5, fillcolor="rgba(232,72,85,0.08)", line_width=0)
     for yr, label, ax in [(2020, "+319k exceso", 55), (2021, "+334k exceso", 55)]:
         obs_v = float(nac.filter(pl.col("año") == yr)["valor"][0])
         fig.add_annotation(
-            x=yr, y=obs_v, row=1, col=1,
-            text=label, showarrow=True, arrowhead=2, arrowwidth=1,
+            x=yr, y=obs_v, text=label, showarrow=True, arrowhead=2, arrowwidth=1,
             arrowcolor="#E84855", font=dict(size=10, color="#E84855"),
             ax=ax, ay=-35, bgcolor="#0F172A", borderpad=3,
         )
+    fig.update_layout(
+        **CHART_LAYOUT, height=400,
+        title="Defunciones observadas vs. trayectoria esperada (baseline 2010–2019)",
+        xaxis=dict(gridcolor=GRID, dtick=2),
+        yaxis=dict(gridcolor=GRID, title="Defunciones"),
+        legend=dict(orientation="h", y=1.12, x=0),
+        margin=dict(t=60, b=50, l=80, r=20),
+    )
+    return fig
 
-    # ── Panel 2: YoY bars ────────────────────────────────────────────────
+
+def fig_anomaly_bars() -> go.Figure:
+    _, _, _, yoy, yrs, mu, sd, z, _, _, _, _, _, _ = _anomaly_base()
     bar_colors = [
         "#E84855" if abs(zi) >= 2 else ("#F4A261" if abs(zi) >= 1 else "#3BB273")
         for zi in z
     ]
-    fig.add_trace(go.Bar(
+    fig = go.Figure(go.Bar(
         x=yrs, y=yoy,
         marker_color=bar_colors, name="YoY %",
         text=[f"{g:+.1f}%" for g in yoy],
         textposition="outside", textfont=dict(size=8, color="#94A3B8"),
         hovertemplate="%{x}: %{y:+.2f}%<extra></extra>",
-    ), row=2, col=1)
-
-    # σ reference bands and mean line
-    fig.add_hrect(y0=mu - 2*sd, y1=mu + 2*sd,
-                  fillcolor="rgba(46,134,171,0.08)", line_width=0, row=2, col=1)
-    fig.add_hrect(y0=mu - sd, y1=mu + sd,
-                  fillcolor="rgba(46,134,171,0.16)", line_width=0, row=2, col=1)
+    ))
+    fig.add_hrect(y0=mu - 2*sd, y1=mu + 2*sd, fillcolor="rgba(46,134,171,0.08)", line_width=0)
+    fig.add_hrect(y0=mu - sd,   y1=mu + sd,   fillcolor="rgba(46,134,171,0.16)", line_width=0)
     for y_val, dash, col in [
         (mu, "dash", "#94A3B8"),
         (mu + sd,   "dot", "#2E86AB"), (mu - sd,   "dot", "#2E86AB"),
         (mu + 2*sd, "dot", "#475569"), (mu - 2*sd, "dot", "#475569"),
     ]:
-        fig.add_hline(y=y_val, line_dash=dash, line_color=col,
-                      line_width=1.2, opacity=0.7, row=2, col=1)
-
-    # Z-score labels on extreme bars
+        fig.add_hline(y=y_val, line_dash=dash, line_color=col, line_width=1.2, opacity=0.7)
     for yr, z_lbl, ay in [(2020, f"z=+{z[yrs.index(2020)]:.0f}σ", -18),
                            (2022, f"z={z[yrs.index(2022)]:.0f}σ",  18),
                            (2023, f"z={z[yrs.index(2023)]:.0f}σ",  18)]:
-        g_val = yoy[yrs.index(yr)]
         fig.add_annotation(
-            x=yr, y=g_val, row=2, col=1,
-            text=z_lbl, showarrow=False, yshift=ay,
-            font=dict(size=9, color="#E84855"),
+            x=yr, y=yoy[yrs.index(yr)], text=z_lbl,
+            showarrow=False, yshift=ay, font=dict(size=9, color="#E84855"),
         )
-
     fig.update_layout(
-        **CHART_LAYOUT, height=700,
-        title="Análisis de anomalías — Defunciones registradas México (2010–2024)",
-        showlegend=True,
-        legend=dict(orientation="h", y=1.04, x=0),
-        margin=dict(t=80, b=60, l=80, r=20),
+        **CHART_LAYOUT, height=360,
+        title=f"Crecimiento anual (YoY %)  —  media pre-COVID: {mu:.1f}%  σ={sd:.1f}pp",
+        xaxis=dict(gridcolor=GRID, dtick=2),
+        yaxis=dict(gridcolor=GRID, title="YoY (%)"),
+        showlegend=False,
+        margin=dict(t=50, b=50, l=80, r=20),
     )
-    fig.update_xaxes(gridcolor=GRID, dtick=2)
-    fig.update_yaxes(gridcolor=GRID)
-    fig.update_yaxes(title_text="Defunciones", row=1, col=1)
-    fig.update_yaxes(title_text="YoY (%)", row=2, col=1)
     return fig
 
 
@@ -774,15 +859,16 @@ def _panel(child) -> html.Div:
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 app.title = "Mortalidad — México"
 
-_sexo_filter = html.Div([
-    html.Label("Sexo:", style={"color": "#94A3B8", "marginRight": "12px", "fontWeight": "600"}),
-    dcc.RadioItems(
-        id="sexo-filter", value="Total", inline=True,
-        options=[{"label": s, "value": s} for s in ["Total", "Hombres", "Mujeres"]],
-        inputStyle={"marginRight": "6px"},
-        labelStyle={"marginRight": "24px", "color": "#CBD5E1", "cursor": "pointer"},
-    ),
-], style={"marginBottom": "24px", "display": "flex", "alignItems": "center"})
+def _sexo_filter(filter_id: str) -> html.Div:
+    return html.Div([
+        html.Label("Sexo:", style={"color": "#94A3B8", "marginRight": "12px", "fontWeight": "600"}),
+        dcc.RadioItems(
+            id=filter_id, value="Total", inline=True,
+            options=[{"label": s, "value": s} for s in ["Total", "Hombres", "Mujeres"]],
+            inputStyle={"marginRight": "6px"},
+            labelStyle={"marginRight": "24px", "color": "#CBD5E1", "cursor": "pointer"},
+        ),
+    ], style={"marginBottom": "20px", "display": "flex", "alignItems": "center"})
 
 app.layout = html.Div(
     style={"backgroundColor": "#0F172A", "minHeight": "100vh",
@@ -793,7 +879,6 @@ app.layout = html.Div(
         html.P("Esperanza de vida · defunciones · diabetes mellitus · 2010–2026 · Fuente: CONAPO / INEGI",
                style={"color": "#64748B", "marginBottom": "24px"}),
 
-        _sexo_filter,
         _kpi_cards(),
 
         dcc.Tabs(id="tabs", value="ev", style={"marginBottom": "16px"}, children=[
@@ -806,29 +891,35 @@ app.layout = html.Div(
         ]),
 
         html.Div(id="tab-ev", children=[
+            _sexo_filter("sexo-filter-ev"),
             _ev_insights(),
-            _panel(dcc.Graph(id="ev-trend",   config={"displayModeBar": False})),
+            _panel(dcc.Graph(id="ev-trend",   config=GRAPH_CONFIG)),
             dbc.Row([
-                dbc.Col(_panel(dcc.Graph(id="ev-ranking", config={"displayModeBar": False})), md=5),
-                dbc.Col(_panel(dcc.Graph(id="ev-map",     config={"displayModeBar": False})), md=7),
+                dbc.Col(_panel(dcc.Graph(id="ev-ranking", config=GRAPH_CONFIG)), md=5),
+                dbc.Col(_panel(dcc.Graph(id="ev-map",     config=GRAPH_CONFIG)), md=7),
             ]),
-            _panel(dcc.Graph(id="ev-covid", config={"displayModeBar": False})),
+            _panel(dcc.Graph(id="ev-covid",    config=GRAPH_CONFIG)),
+            _panel(dcc.Graph(id="ev-progress", config=GRAPH_CONFIG)),
+            _panel(dcc.Graph(id="ev-scatter",  config=GRAPH_CONFIG)),
         ]),
 
         html.Div(id="tab-def", children=[
+            _sexo_filter("sexo-filter-def"),
             _def_insights(),
-            _panel(dcc.Graph(id="def-trend",   config={"displayModeBar": False})),
-            _panel(dcc.Graph(id="def-covid",   config={"displayModeBar": False})),
-            _panel(dcc.Graph(id="def-anomaly", config={"displayModeBar": False})),
+            _panel(dcc.Graph(id="def-trend",        config=GRAPH_CONFIG)),
+            _panel(dcc.Graph(id="def-covid",        config=GRAPH_CONFIG)),
+            _panel(dcc.Graph(id="def-anomaly-trend", config=GRAPH_CONFIG)),
+            _panel(dcc.Graph(id="def-anomaly-bars",  config=GRAPH_CONFIG)),
         ]),
 
         html.Div(id="tab-dm", children=[
+            _sexo_filter("sexo-filter-dm"),
             _dm_insights(),
-            _panel(dcc.Graph(id="dm-trend",       config={"displayModeBar": False})),
-            _panel(dcc.Graph(id="dm-heatmap",     config={"displayModeBar": False})),
+            _panel(dcc.Graph(id="dm-trend",       config=GRAPH_CONFIG)),
+            _panel(dcc.Graph(id="dm-heatmap",     config=GRAPH_CONFIG)),
             dbc.Row([
-                dbc.Col(_panel(dcc.Graph(id="dm-pct",         config={"displayModeBar": False})), md=6),
-                dbc.Col(_panel(dcc.Graph(id="dm-covid-state", config={"displayModeBar": False})), md=6),
+                dbc.Col(_panel(dcc.Graph(id="dm-pct",         config=GRAPH_CONFIG)), md=6),
+                dbc.Col(_panel(dcc.Graph(id="dm-covid-state", config=GRAPH_CONFIG)), md=6),
             ]),
         ]),
     ],
@@ -853,26 +944,29 @@ def switch_tab(tab: str):
 
 
 @app.callback(
-    Output("ev-trend",   "figure"),
-    Output("ev-ranking", "figure"),
-    Output("ev-map",     "figure"),
-    Output("ev-covid",   "figure"),
-    Input("sexo-filter", "value"),
+    Output("ev-trend",    "figure"),
+    Output("ev-ranking",  "figure"),
+    Output("ev-map",      "figure"),
+    Output("ev-covid",    "figure"),
+    Output("ev-progress", "figure"),
+    Output("ev-scatter",  "figure"),
+    Input("sexo-filter-ev", "value"),
 )
 def update_ev(sexo: str):
     d = df_ev.filter(pl.col("sexo") == sexo)
-    return fig_ev_trend(d), fig_ev_ranking(d), fig_ev_map(d), fig_ev_covid(d)
+    return fig_ev_trend(d), fig_ev_ranking(d), fig_ev_map(d), fig_ev_covid(d), fig_ev_progress(d), fig_ev_scatter(d)
 
 
 @app.callback(
-    Output("def-trend",   "figure"),
-    Output("def-covid",   "figure"),
-    Output("def-anomaly", "figure"),
-    Input("sexo-filter", "value"),
+    Output("def-trend",         "figure"),
+    Output("def-covid",         "figure"),
+    Output("def-anomaly-trend", "figure"),
+    Output("def-anomaly-bars",  "figure"),
+    Input("sexo-filter-def", "value"),
 )
 def update_def(sexo: str):
     d = df_def.filter(pl.col("sexo") == sexo)
-    return fig_def_trend(d), fig_def_covid(d), fig_anomaly()
+    return fig_def_trend(d), fig_def_covid(d), fig_anomaly_trend(), fig_anomaly_bars()
 
 
 @app.callback(
@@ -880,7 +974,7 @@ def update_def(sexo: str):
     Output("dm-heatmap",     "figure"),
     Output("dm-pct",         "figure"),
     Output("dm-covid-state", "figure"),
-    Input("sexo-filter", "value"),
+    Input("sexo-filter-dm", "value"),
 )
 def update_dm(sexo: str):
     d = df_dm.filter(pl.col("sexo") == sexo)
