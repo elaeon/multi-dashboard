@@ -52,6 +52,14 @@ GRADO_COLORS = {
 
 DATA = "data/unam_egresos_y_titulacion"
 
+# Variantes con la misma carrera en distinta capitalización; se homologan
+# al cargar para que aparezcan una sola vez en cualquier agregado.
+_CARRERA_ALIAS = {
+    "Ciencias ambientales":                  "Ciencias Ambientales",
+    "Desarrollo y gestión interculturales":  "Desarrollo y Gestión Interculturales",
+    "Manejo sustentable de zonas costeras":  "Manejo Sustentable de Zonas Costeras",
+}
+
 # ── Carga y limpieza ────────────────────────────────────────────────────────
 
 def _norm(col: str) -> pl.Expr:
@@ -91,7 +99,10 @@ df_grado = (
 # Esta tabla alimenta tanto el KPI de títulos como las gráficas de métodos
 # (trayectorias / share / trajectory), que antes usaban examenes_profesionales
 # pero ese archivo solo trae el desglose por método a partir de 2014.
-_titulos_raw = pl.read_csv(f"{DATA}/titulacion_carreras.csv")
+_titulos_raw = (
+    pl.read_csv(f"{DATA}/titulacion_carreras.csv")
+    .with_columns(pl.col("carrera").replace(_CARRERA_ALIAS))
+)
 df_titulos = (
     _titulos_raw
     .group_by(["año", "opcion_titulacion"]).agg(pl.col("total").sum().alias("valor"))
@@ -119,6 +130,7 @@ _FOOTNOTE = r"^[a-z] "
 _eg_carr_raw = (
     pl.read_csv(f"{DATA}/egreso_carreras.csv")
     .filter(~pl.col("carrera").str.contains(_FOOTNOTE))
+    .with_columns(pl.col("carrera").replace(_CARRERA_ALIAS))
 )
 df_lic_egreso = (
     _eg_carr_raw.group_by("año").agg(pl.col("total").sum().alias("egreso_lic"))
@@ -158,6 +170,7 @@ METHOD_COLORS = {m: _METHOD_PALETTE[i % len(_METHOD_PALETTE)]
 _pob_lic_raw = (
     pl.read_csv(f"{DATA}/poblacion_escolar_lic.csv")
     .filter(~pl.col("carrera").str.contains(_FOOTNOTE))
+    .with_columns(pl.col("carrera").replace(_CARRERA_ALIAS))
 )
 
 # Algunas carreras/entidades en pob traen sufijo de pie de página ("Arquitecturab",
@@ -203,6 +216,57 @@ CARRERAS_FLUJO = sorted(
 )
 # El último año disponible para "continúan al siguiente año" es Y_MAX − 1
 FLUJO_YEARS = list(range(Y_MIN, Y_MAX))
+
+# ── Abandono por carrera y sexo ─────────────────────────────────────────────
+# Misma lógica del Sankey, aplicada por sexo: por (carrera, año) calcular
+# abandono_S = inscritos_S − egreso_S − continúan_S
+# donde continúan_S = min(rei_S del siguiente año, inscritos_S − egreso_S).
+
+_pob_carr_sex = (
+    _pob_lic.group_by(["carrera", "año"])
+    .agg([
+        pl.col("pi_h").sum(),  pl.col("pi_m").sum(),
+        pl.col("rei_h").sum(), pl.col("rei_m").sum(),
+    ])
+    .with_columns([
+        (pl.col("pi_h") + pl.col("rei_h")).alias("insc_h"),
+        (pl.col("pi_m") + pl.col("rei_m")).alias("insc_m"),
+    ])
+)
+_eg_carr_sex = (
+    _eg_carr_raw.group_by(["carrera", "año"])
+    .agg([
+        pl.col("hombres").sum().alias("eg_h"),
+        pl.col("mujeres").sum().alias("eg_m"),
+    ])
+)
+# rei del año siguiente: shift hacia atrás (año - 1) para joinear con el año base
+_rei_next = (
+    _pob_carr_sex.select(["carrera", "año", "rei_h", "rei_m"])
+    .with_columns(pl.col("año") - 1)
+    .rename({"rei_h": "rei_h_next", "rei_m": "rei_m_next"})
+)
+df_drop_carr_year = (
+    _pob_carr_sex
+    .join(_eg_carr_sex, on=["carrera", "año"], how="inner")
+    .join(_rei_next, on=["carrera", "año"], how="left")
+    .with_columns([
+        pl.col("rei_h_next").fill_null(0),
+        pl.col("rei_m_next").fill_null(0),
+        (pl.col("insc_h") - pl.col("eg_h")).clip(0, None).alias("no_eg_h"),
+        (pl.col("insc_m") - pl.col("eg_m")).clip(0, None).alias("no_eg_m"),
+    ])
+    .with_columns([
+        pl.min_horizontal("rei_h_next", "no_eg_h").alias("cont_h"),
+        pl.min_horizontal("rei_m_next", "no_eg_m").alias("cont_m"),
+    ])
+    .with_columns([
+        (pl.col("no_eg_h") - pl.col("cont_h")).alias("abandono_h"),
+        (pl.col("no_eg_m") - pl.col("cont_m")).alias("abandono_m"),
+    ])
+    .filter(pl.col("año").is_in(FLUJO_YEARS))
+    .select(["carrera", "año", "insc_h", "insc_m", "abandono_h", "abandono_m"])
+)
 
 # ── KPIs ─────────────────────────────────────────────────────────────────────
 
@@ -760,6 +824,92 @@ def fig_flujo(carrera: str | None, year: int) -> go.Figure:
     )
     return fig
 
+SEX_COLORS = {"h": "#2E86AB", "m": "#F4A261"}  # hombres / mujeres
+MIN_INSCRITOS = 500  # excluir carreras con muestra pequeña
+
+def fig_abandono_sexo(yr0: int, yr1: int, top_n: int) -> go.Figure:
+    """Dumbbell: carreras ordenadas por tasa de abandono, con marcadores H/M."""
+    d = df_drop_carr_year.filter(pl.col("año").is_between(yr0, yr1))
+    agg = (
+        d.group_by("carrera")
+        .agg([
+            pl.col("insc_h").sum(), pl.col("insc_m").sum(),
+            pl.col("abandono_h").sum(), pl.col("abandono_m").sum(),
+        ])
+        .with_columns([
+            (pl.col("insc_h") + pl.col("insc_m")).alias("insc_total"),
+            (pl.col("abandono_h") + pl.col("abandono_m")).alias("ab_total"),
+        ])
+        .filter(
+            (pl.col("insc_total") >= MIN_INSCRITOS)
+            & (pl.col("insc_h") > 0) & (pl.col("insc_m") > 0)
+        )
+        .with_columns([
+            (pl.col("abandono_h") / pl.col("insc_h") * 100).alias("rate_h"),
+            (pl.col("abandono_m") / pl.col("insc_m") * 100).alias("rate_m"),
+            (pl.col("ab_total")   / pl.col("insc_total") * 100).alias("rate_total"),
+        ])
+        .sort("rate_total", descending=False)  # ascendente → mayor abandono arriba
+        .tail(top_n)
+    )
+    if agg.is_empty():
+        return go.Figure().update_layout(
+            title=f"Sin datos para {yr0}–{yr1}", **CHART_LAYOUT,
+        )
+
+    carreras = agg["carrera"].to_list()
+    rh = agg["rate_h"].to_list()
+    rm = agg["rate_m"].to_list()
+    ih = agg["insc_h"].to_list()
+    im = agg["insc_m"].to_list()
+
+    # Conectores entre H y M por carrera (truco de None-separator)
+    x_lines, y_lines = [], []
+    for h, m, c in zip(rh, rm, carreras):
+        x_lines += [h, m, None]
+        y_lines += [c, c, None]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x_lines, y=y_lines, mode="lines",
+        line=dict(color="#475569", width=1.5),
+        showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=rh, y=carreras, mode="markers", name="Hombres",
+        marker=dict(color=SEX_COLORS["h"], size=11,
+                    line=dict(color="#0F172A", width=1)),
+        customdata=ih,
+        hovertemplate=("<b>%{y}</b><br>Hombres: %{x:.1f}%"
+                       "  (inscritos H: %{customdata:,})<extra></extra>"),
+    ))
+    fig.add_trace(go.Scatter(
+        x=rm, y=carreras, mode="markers", name="Mujeres",
+        marker=dict(color=SEX_COLORS["m"], size=11,
+                    line=dict(color="#0F172A", width=1)),
+        customdata=im,
+        hovertemplate=("<b>%{y}</b><br>Mujeres: %{x:.1f}%"
+                       "  (inscritas M: %{customdata:,})<extra></extra>"),
+    ))
+    n = len(carreras)
+    fig.update_layout(
+        title=(
+            f"Tasa de abandono por carrera y sexo · {yr0}–{yr1}"
+            f"<br><span style='font-size:0.8em;color:#94A3B8'>"
+            f"abandono = inscritos − egreso − reingreso al año siguiente · "
+            f"muestra ≥ {MIN_INSCRITOS:,} inscritos · top {top_n}</span>"
+        ),
+        height=max(360, n * 22 + 140),
+        xaxis=dict(title="% de abandono", ticksuffix="%", gridcolor="#334155"),
+        yaxis=dict(categoryorder="array", categoryarray=carreras,
+                   gridcolor="rgba(0,0,0,0)", automargin=True),
+        legend=dict(orientation="h", y=-0.05, x=0),
+        margin=dict(t=90, b=60, l=10, r=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#CBD5E1",
+    )
+    return fig
+
 # ── Layout ────────────────────────────────────────────────────────────────────
 
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.DARKLY])
@@ -881,6 +1031,32 @@ app.layout = dbc.Container([
                 dbc.Col(dcc.Graph(id="g-flujo"), md=12),
             ]),
         ]),
+        dbc.Tab(label="Abandono por sexo", tab_id="tab-abandono", children=[
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Mostrar top", style={"color": "#CBD5E1"}),
+                    dcc.Dropdown(
+                        id="abandono-topn",
+                        options=[{"label": f"Top {n}", "value": n} for n in [15, 30, 50, 100]],
+                        value=30,
+                        clearable=False,
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                    ),
+                ], md=4),
+            ], className="mb-2 mt-3"),
+            dbc.Row([
+                dbc.Col(html.Div(
+                    "Ranking por tasa global (H+M). Cada par de puntos compara la "
+                    "tasa de abandono de hombres (azul) y mujeres (naranja) en la misma carrera. "
+                    "Una brecha grande indica que un sexo abandona mucho más que el otro. "
+                    f"Se excluyen carreras con < {MIN_INSCRITOS:,} inscritos en el rango.",
+                    style={"color": "#94A3B8", "fontSize": "0.8rem", "marginBottom": "8px"},
+                ), md=12),
+            ]),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-abandono"), md=12),
+            ]),
+        ]),
         dbc.Tab(label="Trayectorias por método", tab_id="tab-trayectorias", children=[
             dbc.Row([
                 dbc.Col([
@@ -977,6 +1153,15 @@ def update_trayectorias(year_range, carreras):
 )
 def update_flujo(carrera, year):
     return fig_flujo(None if carrera == "__ALL__" else carrera, int(year))
+
+@app.callback(
+    Output("g-abandono", "figure"),
+    Input("year-range", "value"),
+    Input("abandono-topn", "value"),
+)
+def update_abandono(year_range, top_n):
+    yr0, yr1 = year_range
+    return fig_abandono_sexo(int(yr0), int(yr1), int(top_n))
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8050)
