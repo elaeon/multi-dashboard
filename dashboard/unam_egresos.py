@@ -1,7 +1,14 @@
 """Dashboard: UNAM — Egreso y Titulación
 
-Source: data/unam_egresos_y_titulacion/{egreso, examenes_de_grado,
-examenes_profesionales, titulacion_carreras}.csv
+Source: data/unam_egresos_y_titulacion/{egreso, egreso_carreras,
+examenes_de_grado, examenes_profesionales, titulacion_carreras}.csv
+
+`egreso.csv` se usa solo para la vista por nivel (Bachillerato / Licenciatura
+/ Técnico). Para los agregados de licenciatura (eficiencia terminal, pipeline,
+contribución por método) se usa `egreso_carreras.csv` — escolarizada por
+carrera —, consistente con `titulacion_carreras.csv` y la pestaña de flujo.
+La diferencia con la cifra de licenciatura en `egreso.csv` (~5–10%) se debe a
+que el agregado incluye SUAYED.
 
 Títulos de licenciatura provienen del desglose por carrera/opción
 (`titulacion_carreras.csv`). El agregado «titulos_expedidos.csv» queda
@@ -104,9 +111,17 @@ def _total_licenciatura(name: str) -> pl.DataFrame:
     )
 
 df_lic_examenes = _total_licenciatura("examenes_profesionales")
+
+# Egreso licenciatura desde el desglose por carrera (escolarizada). Las filas
+# con carrera tipo "b Se refiere…" o "c El criterio…" son notas al pie volcadas
+# por el extractor; se descartan antes de cualquier agregación.
+_FOOTNOTE = r"^[a-z] "
+_eg_carr_raw = (
+    pl.read_csv(f"{DATA}/egreso_carreras.csv")
+    .filter(~pl.col("carrera").str.contains(_FOOTNOTE))
+)
 df_lic_egreso = (
-    df_egreso.filter(pl.col("categoria") == "Licenciatura")
-    .select(["año", pl.col("valor").alias("egreso_lic")])
+    _eg_carr_raw.group_by("año").agg(pl.col("total").sum().alias("egreso_lic"))
 )
 
 # Población escolar — primer ingreso por nivel (renglón padre)
@@ -138,6 +153,56 @@ CARRERAS = sorted(_titulos_raw["carrera"].unique().to_list())
 _METHOD_PALETTE = px.colors.qualitative.Plotly + px.colors.qualitative.Set2
 METHOD_COLORS = {m: _METHOD_PALETTE[i % len(_METHOD_PALETTE)]
                  for i, m in enumerate(METHODS_SORTED)}
+
+# ── Flujo por carrera ───────────────────────────────────────────────────────
+_pob_lic_raw = (
+    pl.read_csv(f"{DATA}/poblacion_escolar_lic.csv")
+    .filter(~pl.col("carrera").str.contains(_FOOTNOTE))
+)
+
+# Algunas carreras/entidades en pob traen sufijo de pie de página ("Arquitecturab",
+# "Cinematografíab"). Se mapean al nombre limpio si existe en eg ∪ tit.
+_CLEAN_C = set(_eg_carr_raw["carrera"].unique().to_list()) | set(_titulos_raw["carrera"].unique().to_list())
+_CLEAN_E = set(_eg_carr_raw["entidad"].unique().to_list()) | set(_titulos_raw["entidad"].unique().to_list())
+
+def _fix(name: str, clean_set: set) -> str:
+    if name in clean_set:
+        return name
+    for n in (1, 2):
+        if len(name) > n and name[-n:].isalpha() and name[-n:].islower() and name[:-n] in clean_set:
+            return name[:-n]
+    return name
+
+_pob_lic = _pob_lic_raw.with_columns([
+    pl.col("carrera").replace({c: _fix(c, _CLEAN_C) for c in _pob_lic_raw["carrera"].unique().to_list()}),
+    pl.col("entidad").replace({e: _fix(e, _CLEAN_E) for e in _pob_lic_raw["entidad"].unique().to_list()}),
+])
+
+# Agregados por (carrera, año) — se suman todas las entidades que ofrecen la carrera
+df_carr_pob = (
+    _pob_lic.group_by(["carrera", "año"])
+    .agg([
+        (pl.col("pi_h") + pl.col("pi_m")).sum().alias("pi"),
+        (pl.col("rei_h") + pl.col("rei_m")).sum().alias("rei"),
+    ])
+)
+df_carr_eg = (
+    _eg_carr_raw.group_by(["carrera", "año"])
+    .agg(pl.col("total").sum().alias("egreso"))
+)
+df_carr_tit = (
+    _titulos_raw.group_by(["carrera", "año"])
+    .agg(pl.col("total").sum().alias("titulos"))
+)
+
+# Carreras con datos en las 3 fuentes — únicas válidas para el flujo
+CARRERAS_FLUJO = sorted(
+    set(df_carr_pob["carrera"].to_list())
+    & set(df_carr_eg["carrera"].to_list())
+    & set(df_carr_tit["carrera"].to_list())
+)
+# El último año disponible para "continúan al siguiente año" es Y_MAX − 1
+FLUJO_YEARS = list(range(Y_MIN, Y_MAX))
 
 # ── KPIs ─────────────────────────────────────────────────────────────────────
 
@@ -596,6 +661,105 @@ def fig_eficiencia(yr0: int, yr1: int) -> go.Figure:
     )
     return fig
 
+def _flujo_year(carrera: str | None, year: int) -> dict:
+    """Aggregate one (carrera, año) for the Sankey.
+
+    `carrera=None` → todas las carreras válidas (intersección de las 3 fuentes).
+    """
+    if carrera is None:
+        pob = df_carr_pob.filter(pl.col("carrera").is_in(CARRERAS_FLUJO))
+        eg  = df_carr_eg.filter(pl.col("carrera").is_in(CARRERAS_FLUJO))
+        tit = df_carr_tit.filter(pl.col("carrera").is_in(CARRERAS_FLUJO))
+    else:
+        pob = df_carr_pob.filter(pl.col("carrera") == carrera)
+        eg  = df_carr_eg.filter(pl.col("carrera") == carrera)
+        tit = df_carr_tit.filter(pl.col("carrera") == carrera)
+
+    pi       = int(pob.filter(pl.col("año") == year)["pi"].sum())
+    rei      = int(pob.filter(pl.col("año") == year)["rei"].sum())
+    rei_next = int(pob.filter(pl.col("año") == year + 1)["rei"].sum())
+    egreso   = int(eg.filter(pl.col("año") == year)["egreso"].sum())
+    tit_y    = int(tit.filter(pl.col("año") == year)["titulos"].sum())
+
+    inscritos = pi + rei
+    # cap continúan al saldo de no-egresados para mantener conservación en el sankey
+    no_egresan = max(0, inscritos - egreso)
+    continuan  = min(rei_next, no_egresan)
+    abandono   = max(0, no_egresan - continuan)
+    # cap titulados al egreso del año; el resto (cohortes anteriores) se reporta aparte
+    tit_link = min(tit_y, egreso)
+    sin_tit  = max(0, egreso - tit_link)
+
+    return dict(
+        pi=pi, rei=rei, inscritos=inscritos, egreso=egreso,
+        continuan=continuan, abandono=abandono,
+        tit_link=tit_link, sin_tit=sin_tit, tit_total=tit_y,
+    )
+
+def fig_flujo(carrera: str | None, year: int) -> go.Figure:
+    """Sankey: ingreso → inscritos → {egresan, continúan, abandono} → titulación."""
+    f = _flujo_year(carrera, year)
+    label = "Todas las carreras" if carrera is None else carrera
+
+    if f["inscritos"] == 0:
+        return go.Figure().update_layout(
+            title=f"Sin datos para «{label}» en {year}", **CHART_LAYOUT,
+        )
+
+    nodes = [
+        f"Primer ingreso · {f['pi']:,}",          # 0
+        f"Reingreso · {f['rei']:,}",              # 1
+        f"Inscritos · {f['inscritos']:,}",        # 2
+        f"Egresan · {f['egreso']:,}",             # 3
+        f"Continúan en {year+1} · {f['continuan']:,}",  # 4
+        f"Abandono · {f['abandono']:,}",          # 5
+        f"Titulados ese año · {f['tit_link']:,}", # 6
+        f"Sin título inmediato · {f['sin_tit']:,}",     # 7
+    ]
+    node_colors = ["#2E86AB", "#3BB273", "#475569",
+                   "#F4A261", "#A78BFA", "#E84855",
+                   "#3BB273", "#F4A261"]
+    src   = [0, 1, 2, 2, 2, 3, 3]
+    tgt   = [2, 2, 3, 4, 5, 6, 7]
+    value = [f["pi"], f["rei"], f["egreso"], f["continuan"], f["abandono"],
+             f["tit_link"], f["sin_tit"]]
+    link_colors = [
+        "rgba(46,134,171,0.35)", "rgba(59,178,115,0.35)",
+        "rgba(244,162,97,0.35)", "rgba(167,139,250,0.35)", "rgba(232,72,85,0.35)",
+        "rgba(59,178,115,0.45)", "rgba(244,162,97,0.35)",
+    ]
+    # Eliminar enlaces con value=0 para que el sankey no muestre nodos vacíos
+    keep = [i for i, v in enumerate(value) if v > 0]
+    src, tgt, value, link_colors = ([x[i] for i in keep] for x in (src, tgt, value, link_colors))
+
+    fig = go.Figure(go.Sankey(
+        arrangement="snap",
+        node=dict(
+            label=nodes, color=node_colors,
+            pad=22, thickness=18,
+            line=dict(color="#0F172A", width=0.5),
+        ),
+        link=dict(source=src, target=tgt, value=value, color=link_colors,
+                  hovertemplate="%{source.label} → %{target.label}<br>%{value:,}<extra></extra>"),
+    ))
+
+    sub = ""
+    if f["tit_total"] > f["tit_link"]:
+        extra = f["tit_total"] - f["tit_link"]
+        sub = (
+            f"<br><span style='font-size:0.78em;color:#94A3B8'>"
+            f"Titulados totales en {year}: {f['tit_total']:,} "
+            f"(+{extra:,} de cohortes anteriores, fuera del flujo)</span>"
+        )
+    fig.update_layout(
+        title=f"Flujo · {label} · {year} → {year+1}{sub}",
+        height=540,
+        font_color="#CBD5E1",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(t=90, b=20, l=10, r=10),
+    )
+    return fig
+
 # ── Layout ────────────────────────────────────────────────────────────────────
 
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.DARKLY])
@@ -678,6 +842,43 @@ app.layout = dbc.Container([
             ], className="mb-2"),
             dbc.Row([
                 dbc.Col(dcc.Graph(id="g-trajectory"), md=12),
+            ]),
+        ]),
+        dbc.Tab(label="Flujo por carrera", tab_id="tab-flujo", children=[
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Carrera", style={"color": "#CBD5E1"}),
+                    dcc.Dropdown(
+                        id="flujo-carrera",
+                        options=([{"label": "— Todas las carreras —", "value": "__ALL__"}]
+                                 + [{"label": c, "value": c} for c in CARRERAS_FLUJO]),
+                        value="__ALL__",
+                        clearable=False,
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                    ),
+                ], md=8),
+                dbc.Col([
+                    html.Label("Año base", style={"color": "#CBD5E1"}),
+                    dcc.Dropdown(
+                        id="flujo-year",
+                        options=[{"label": str(y), "value": y} for y in FLUJO_YEARS],
+                        value=FLUJO_YEARS[-1],
+                        clearable=False,
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                    ),
+                ], md=4),
+            ], className="mb-2 mt-3"),
+            dbc.Row([
+                dbc.Col(html.Div(
+                    "Inscritos = primer ingreso + reingreso del año. "
+                    "Continúan = reingreso registrado al año siguiente (acotado al saldo no-egresado). "
+                    "Abandono = inscritos − egresan − continúan. "
+                    "Titulados ese año se acota al egreso del año; el excedente proviene de cohortes previas.",
+                    style={"color": "#94A3B8", "fontSize": "0.8rem", "marginBottom": "8px"},
+                ), md=12),
+            ]),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-flujo"), md=12),
             ]),
         ]),
         dbc.Tab(label="Trayectorias por método", tab_id="tab-trayectorias", children=[
@@ -768,6 +969,14 @@ def update_trayectorias(year_range, carreras):
         .rename({"opcion_titulacion": "categoria"})
     )
     return fig_trayectorias(agg)
+
+@app.callback(
+    Output("g-flujo", "figure"),
+    Input("flujo-carrera", "value"),
+    Input("flujo-year", "value"),
+)
+def update_flujo(carrera, year):
+    return fig_flujo(None if carrera == "__ALL__" else carrera, int(year))
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8050)
