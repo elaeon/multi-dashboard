@@ -133,6 +133,12 @@ METHODS_SORTED = (
     .sort("valor", descending=True)["categoria"].to_list()
 )
 
+CARRERAS = sorted(_titulos_raw["carrera"].unique().to_list())
+
+_METHOD_PALETTE = px.colors.qualitative.Plotly + px.colors.qualitative.Set2
+METHOD_COLORS = {m: _METHOD_PALETTE[i % len(_METHOD_PALETTE)]
+                 for i, m in enumerate(METHODS_SORTED)}
+
 # ── KPIs ─────────────────────────────────────────────────────────────────────
 
 def compute_kpis(yr0: int, yr1: int) -> dict:
@@ -273,6 +279,10 @@ def fig_trayectorias(d: pl.DataFrame) -> go.Figure:
     agg = d.group_by(["categoria", "año"]).agg(pl.col("valor").sum())
     totals = agg.group_by("categoria").agg(pl.col("valor").sum()).sort("valor", descending=True)
     methods = totals["categoria"].to_list()
+    if not methods:
+        return go.Figure().update_layout(
+            title="Sin datos para la selección actual", **CHART_LAYOUT,
+        )
 
     cols = 4
     rows = (len(methods) + cols - 1) // cols
@@ -340,6 +350,66 @@ def fig_share(d: pl.DataFrame) -> go.Figure:
         xaxis=dict(gridcolor="#334155", dtick=1),
         legend=dict(orientation="h", y=-0.22, x=0, font=dict(size=10)),
         margin=dict(t=50, b=110, l=10, r=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#CBD5E1",
+    )
+    return fig
+
+def fig_top_method_per_entidad(yr0: int, yr1: int) -> go.Figure:
+    """Para cada entidad, el método de titulación más popular (% del total)."""
+    base = (
+        _titulos_raw.filter(pl.col("año").is_between(yr0, yr1))
+        .group_by(["entidad", "opcion_titulacion"]).agg(pl.col("total").sum())
+    )
+    ent_total = base.group_by("entidad").agg(pl.col("total").sum().alias("ent_total"))
+    base = (
+        base.join(ent_total, on="entidad")
+        .with_columns((pl.col("total") / pl.col("ent_total") * 100).alias("pct"))
+    )
+    top = (
+        base.sort(["entidad", "pct"], descending=[False, True])
+        .group_by("entidad", maintain_order=True).head(1)
+        # ordering: agrupar entidades por método dominante, descendiendo dentro de cada grupo
+        .sort(["opcion_titulacion", "pct"], descending=[False, True])
+    )
+    if top.is_empty():
+        return go.Figure().update_layout(
+            title="Sin datos para el rango seleccionado", **CHART_LAYOUT,
+        )
+
+    fig = go.Figure()
+    # una traza por método (para que aparezca en la leyenda con su color)
+    for method in top["opcion_titulacion"].unique(maintain_order=True).to_list():
+        sub = top.filter(pl.col("opcion_titulacion") == method)
+        fig.add_trace(go.Bar(
+            x=sub["pct"].to_list(),
+            y=sub["entidad"].to_list(),
+            orientation="h",
+            name=method,
+            marker_color=METHOD_COLORS.get(method, "#94A3B8"),
+            customdata=sub["total"].to_list(),
+            text=[f"{p:.0f}%" for p in sub["pct"].to_list()],
+            textposition="outside",
+            textfont=dict(color="#CBD5E1", size=10),
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                f"Método: {method}<br>"
+                "% del total: %{x:.1f}%<br>"
+                "Títulos: %{customdata:,}<extra></extra>"
+            ),
+            cliponaxis=False,
+        ))
+    n = top.height
+    fig.update_layout(
+        title=f"Método de titulación más popular por entidad · {yr0}–{yr1}",
+        height=max(440, n * 20 + 140),
+        xaxis=dict(title="% de los títulos de la entidad",
+                   range=[0, 100], ticksuffix="%", gridcolor="#334155"),
+        yaxis=dict(categoryorder="array",
+                   categoryarray=top["entidad"].to_list(),
+                   gridcolor="#334155", automargin=True),
+        legend=dict(orientation="h", y=-0.05, x=0, font=dict(size=10)),
+        margin=dict(t=60, b=80, l=10, r=60),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font_color="#CBD5E1",
     )
@@ -557,57 +627,78 @@ app.layout = dbc.Container([
         ], md=12),
     ], className="mb-3"),
 
-    dbc.Row(id="kpis", className="mb-3"),
-
-    dbc.Row([
-        dbc.Col(dcc.Graph(id="g-egreso"), md=6),
-        dbc.Col(dcc.Graph(id="g-grado"), md=6),
-    ], className="mb-3"),
-    dbc.Row([
-        dbc.Col(dcc.Graph(id="g-ingreso"), md=6),
-        dbc.Col(dcc.Graph(id="g-eficiencia"), md=6),
-    ], className="mb-3"),
-    dbc.Row([
-        dbc.Col(dcc.Graph(id="g-pipeline"), md=12),
-    ], className="mb-3"),
-    dbc.Row([
-        dbc.Col(dcc.Graph(id="g-trayectorias"), md=12),
-    ], className="mb-3"),
-    dbc.Row([
-        dbc.Col(dcc.Graph(id="g-share"), md=12),
-    ], className="mb-3"),
-    dbc.Row([
-        dbc.Col(dcc.Graph(id="g-contribution"), md=12),
-    ], className="mb-3"),
-    dbc.Row([
-        dbc.Col([
-            html.Label("Método a comparar", style={"color": "#CBD5E1"}),
-            dcc.Dropdown(
-                id="method-pick",
-                options=[{"label": m, "value": m} for m in METHODS_SORTED],
-                value=METHODS_SORTED[0],
-                clearable=False,
-                style={"backgroundColor": "#1E293B", "color": "#0F172A"},
-            ),
-        ], md=6),
-        dbc.Col([
-            html.Label("Eje Y", style={"color": "#CBD5E1"}),
-            dcc.RadioItems(
-                id="trajectory-y",
-                options=[
-                    {"label": "  Egreso licenciatura", "value": "egreso"},
-                    {"label": f"  Títulos / Ingreso (lag {LAG_LIC}y)", "value": "cohorte"},
-                ],
-                value="egreso",
-                inline=True,
-                inputStyle={"marginLeft": "12px", "marginRight": "4px"},
-                style={"color": "#CBD5E1"},
-            ),
-        ], md=6),
-    ], className="mb-2"),
-    dbc.Row([
-        dbc.Col(dcc.Graph(id="g-trajectory"), md=12),
-    ]),
+    dbc.Tabs([
+        dbc.Tab(label="Vista general", tab_id="tab-overview", children=[
+            dbc.Row(id="kpis", className="mb-3 mt-3"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-egreso"), md=6),
+                dbc.Col(dcc.Graph(id="g-grado"), md=6),
+            ], className="mb-3"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-ingreso"), md=6),
+                dbc.Col(dcc.Graph(id="g-eficiencia"), md=6),
+            ], className="mb-3"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-pipeline"), md=12),
+            ], className="mb-3"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-share"), md=12),
+            ], className="mb-3"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-top-method"), md=12),
+            ], className="mb-3"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-contribution"), md=12),
+            ], className="mb-3"),
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Método a comparar", style={"color": "#CBD5E1"}),
+                    dcc.Dropdown(
+                        id="method-pick",
+                        options=[{"label": m, "value": m} for m in METHODS_SORTED],
+                        value=METHODS_SORTED[0],
+                        clearable=False,
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                    ),
+                ], md=6),
+                dbc.Col([
+                    html.Label("Eje Y", style={"color": "#CBD5E1"}),
+                    dcc.RadioItems(
+                        id="trajectory-y",
+                        options=[
+                            {"label": "  Egreso licenciatura", "value": "egreso"},
+                            {"label": f"  Títulos / Ingreso (lag {LAG_LIC}y)", "value": "cohorte"},
+                        ],
+                        value="egreso",
+                        inline=True,
+                        inputStyle={"marginLeft": "12px", "marginRight": "4px"},
+                        style={"color": "#CBD5E1"},
+                    ),
+                ], md=6),
+            ], className="mb-2"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-trajectory"), md=12),
+            ]),
+        ]),
+        dbc.Tab(label="Trayectorias por método", tab_id="tab-trayectorias", children=[
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Carreras (vacío = todas)", style={"color": "#CBD5E1"}),
+                    dcc.Dropdown(
+                        id="carrera-pick",
+                        options=[{"label": c, "value": c} for c in CARRERAS],
+                        value=[],
+                        multi=True,
+                        placeholder="Seleccionar carreras…",
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                    ),
+                ], md=12),
+            ], className="mb-3 mt-3"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-trayectorias"), md=12),
+            ]),
+        ]),
+    ], id="tabs", active_tab="tab-overview"),
 ], fluid=True, style={"backgroundColor": "#0F172A", "minHeight": "100vh", "padding": "20px"})
 
 # ── Callback ─────────────────────────────────────────────────────────────────
@@ -619,8 +710,8 @@ app.layout = dbc.Container([
     Output("g-ingreso", "figure"),
     Output("g-eficiencia", "figure"),
     Output("g-pipeline", "figure"),
-    Output("g-trayectorias", "figure"),
     Output("g-share", "figure"),
+    Output("g-top-method", "figure"),
     Output("g-contribution", "figure"),
     Input("year-range", "value"),
 )
@@ -646,8 +737,8 @@ def update_all(year_range):
         fig_ingreso(ig),
         fig_eficiencia(yr0, yr1),
         fig_pipeline(yr0, yr1),
-        fig_trayectorias(me),
         fig_share(me),
+        fig_top_method_per_entidad(yr0, yr1),
         fig_contribution(yr0, yr1),
     )
 
@@ -661,6 +752,22 @@ def update_trajectory(year_range, method, y_metric):
     yr0, yr1 = year_range
     d = df_titulos.filter(pl.col("año").is_between(yr0, yr1))
     return fig_trajectory(d, method, y_metric)
+
+@app.callback(
+    Output("g-trayectorias", "figure"),
+    Input("year-range", "value"),
+    Input("carrera-pick", "value"),
+)
+def update_trayectorias(year_range, carreras):
+    yr0, yr1 = year_range
+    d = _titulos_raw.filter(pl.col("año").is_between(yr0, yr1))
+    if carreras:
+        d = d.filter(pl.col("carrera").is_in(carreras))
+    agg = (
+        d.group_by(["año", "opcion_titulacion"]).agg(pl.col("total").sum().alias("valor"))
+        .rename({"opcion_titulacion": "categoria"})
+    )
+    return fig_trayectorias(agg)
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8050)
