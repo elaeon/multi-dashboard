@@ -1,7 +1,13 @@
-"""Dashboard: UNAM — Egreso y Titulación (2014-2025)
+"""Dashboard: UNAM — Egreso y Titulación
 
 Source: data/unam_egresos_y_titulacion/{egreso, examenes_de_grado,
-examenes_profesionales, titulos_expedidos}.csv
+examenes_profesionales, titulacion_carreras}.csv
+
+Títulos de licenciatura provienen del desglose por carrera/opción
+(`titulacion_carreras.csv`). El agregado «titulos_expedidos.csv» queda
+deprecated: tiene 2025 desactualizado (réplica de 2024) e incluye SUAYED,
+mientras que el desglose por carrera es escolarizada únicamente y se
+extiende hasta 2025 con datos correctos.
 """
 
 import polars as pl
@@ -74,18 +80,19 @@ df_grado = (
     .filter(pl.col("categoria").is_in(GRADO_KEEP))
 )
 
-# 3) Exámenes profesionales (licenciatura) — quitar totales y subsecciones técnico
-def _load_titulacion(name: str) -> pl.DataFrame:
-    return (
-        pl.read_csv(f"{DATA}/{name}.csv")
-        .with_columns(_norm("categoria").alias("categoria"))
-        .filter(~pl.col("categoria").is_in(["T O T A L", "Licenciatura", "Técnico"]))
-        .sort(["año", "orden"])
-        .unique(subset=["año", "categoria"], keep="first")
-    )
-
-df_examenes = _load_titulacion("examenes_profesionales")
-df_titulos  = _load_titulacion("titulos_expedidos")
+# 3) Títulos expedidos (licenciatura) — desde el desglose por carrera
+# Esta tabla alimenta tanto el KPI de títulos como las gráficas de métodos
+# (trayectorias / share / trajectory), que antes usaban examenes_profesionales
+# pero ese archivo solo trae el desglose por método a partir de 2014.
+_titulos_raw = pl.read_csv(f"{DATA}/titulacion_carreras.csv")
+df_titulos = (
+    _titulos_raw
+    .group_by(["año", "opcion_titulacion"]).agg(pl.col("total").sum().alias("valor"))
+    .rename({"opcion_titulacion": "categoria"})
+)
+df_lic_titulos = (
+    _titulos_raw.group_by("año").agg(pl.col("total").sum().alias("titulos_expedidos"))
+)
 
 # Total licenciatura por año (para eficiencia terminal)
 def _total_licenciatura(name: str) -> pl.DataFrame:
@@ -97,7 +104,6 @@ def _total_licenciatura(name: str) -> pl.DataFrame:
     )
 
 df_lic_examenes = _total_licenciatura("examenes_profesionales")
-df_lic_titulos  = _total_licenciatura("titulos_expedidos")
 df_lic_egreso = (
     df_egreso.filter(pl.col("categoria") == "Licenciatura")
     .select(["año", pl.col("valor").alias("egreso_lic")])
@@ -123,7 +129,7 @@ YEARS = sorted(df_egreso["año"].unique().to_list())
 Y_MIN, Y_MAX = YEARS[0], YEARS[-1]
 
 METHODS_SORTED = (
-    df_examenes.group_by("categoria").agg(pl.col("valor").sum())
+    df_titulos.group_by("categoria").agg(pl.col("valor").sum())
     .sort("valor", descending=True)["categoria"].to_list()
 )
 
@@ -339,6 +345,83 @@ def fig_share(d: pl.DataFrame) -> go.Figure:
     )
     return fig
 
+def _ratio_per_method(year: int) -> pl.DataFrame:
+    """Return per-method title/egreso ratio (%) for a single año."""
+    eg = df_lic_egreso.filter(pl.col("año") == year)["egreso_lic"].sum()
+    if not eg:
+        return pl.DataFrame({"categoria": [], "rate": []})
+    return (
+        df_titulos.filter(pl.col("año") == year)
+        .with_columns((pl.col("valor") / eg * 100).alias("rate"))
+        .select(["categoria", "rate"])
+    )
+
+def fig_contribution(yr0: int, yr1: int) -> go.Figure:
+    """Bar chart: cada método y cuánto sumó (o restó) al ratio título/egreso entre yr0 y yr1.
+
+    Δ ratio_metodo = títulos_metodo(yr1)/egreso(yr1) − títulos_metodo(yr0)/egreso(yr0)
+    La suma de Δ por método = Δ del ratio total título/egreso.
+    """
+    r0 = _ratio_per_method(yr0).rename({"rate": "r0"})
+    r1 = _ratio_per_method(yr1).rename({"rate": "r1"})
+    d = (
+        r0.join(r1, on="categoria", how="full", coalesce=True)
+        .with_columns([
+            pl.col("r0").fill_null(0),
+            pl.col("r1").fill_null(0),
+            (pl.col("r1").fill_null(0) - pl.col("r0").fill_null(0)).alias("delta"),
+        ])
+        .sort("delta", descending=False)  # ascending → biggest on top after y-axis reversal
+    )
+    if d.is_empty() or (d["r0"].sum() == 0 and d["r1"].sum() == 0):
+        return go.Figure().update_layout(
+            title=f"Sin datos para {yr0} → {yr1}", **CHART_LAYOUT,
+        )
+    methods = d["categoria"].to_list()
+    deltas = d["delta"].to_list()
+    r0s = d["r0"].to_list()
+    r1s = d["r1"].to_list()
+    colors = ["#3BB273" if v >= 0 else "#E84855" for v in deltas]
+    total_delta = sum(deltas)
+    total_r0 = sum(r0s)
+    total_r1 = sum(r1s)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=deltas, y=methods, orientation="h",
+        marker_color=colors,
+        text=[f"{v:+.1f} pp" for v in deltas],
+        textposition="outside",
+        textfont=dict(color="#CBD5E1"),
+        customdata=list(zip(r0s, r1s)),
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            f"{yr0}: %{{customdata[0]:.1f}}%<br>"
+            f"{yr1}: %{{customdata[1]:.1f}}%<br>"
+            "Δ: %{x:+.2f} pp<extra></extra>"
+        ),
+        cliponaxis=False,
+    ))
+    fig.update_layout(
+        title=(
+            f"Contribución por método al cambio en tasa título/egreso · {yr0} → {yr1}"
+            f"<br><span style='font-size:0.85em;color:#94A3B8'>"
+            f"Tasa total: {total_r0:.1f}% → {total_r1:.1f}%  "
+            f"(Δ {total_delta:+.1f} pp)</span>"
+        ),
+        height=440,
+        xaxis=dict(
+            title="Δ títulos / egreso licenciatura (puntos porcentuales)",
+            gridcolor="#334155", ticksuffix=" pp", zerolinecolor="#64748B",
+        ),
+        yaxis=dict(gridcolor="#334155"),
+        margin=dict(t=80, b=50, l=10, r=80),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#CBD5E1",
+        showlegend=False,
+    )
+    return fig
+
 Y_METRIC_LABEL = {
     "egreso":  "Egreso licenciatura",
     "cohorte": f"Títulos / Ingreso (lag {LAG_LIC}y, %)",
@@ -403,7 +486,7 @@ def fig_trajectory(d_methods: pl.DataFrame, method: str, y_metric: str) -> go.Fi
     fig.update_layout(
         title=f"Trayectoria año a año: «{method}» vs {y_title.lower()}",
         height=480,
-        xaxis=dict(title=f"% de «{method}» en exámenes profesionales",
+        xaxis=dict(title=f"% de «{method}» en títulos expedidos",
                    gridcolor="#334155", ticksuffix="%"),
         yaxis=yaxis,
         margin=dict(t=60, b=50, l=10, r=10),
@@ -457,7 +540,8 @@ def kpi(title: str, value: str, sub: str = "") -> dbc.Col:
 
 app.layout = dbc.Container([
     html.H2("UNAM · Egreso y Titulación", style={"color": "#F8FAFC", "marginTop": "18px"}),
-    html.P("Datos del Anuario Estadístico UNAM, hoja «egr y tit» (2014-2025)",
+    html.P(f"Datos del Anuario Estadístico UNAM, hojas «egr y tit» y «lic x car op» "
+           f"({Y_MIN}–{Y_MAX})",
            style={"color": "#94A3B8"}),
 
     dbc.Row([
@@ -491,6 +575,9 @@ app.layout = dbc.Container([
     ], className="mb-3"),
     dbc.Row([
         dbc.Col(dcc.Graph(id="g-share"), md=12),
+    ], className="mb-3"),
+    dbc.Row([
+        dbc.Col(dcc.Graph(id="g-contribution"), md=12),
     ], className="mb-3"),
     dbc.Row([
         dbc.Col([
@@ -534,13 +621,14 @@ app.layout = dbc.Container([
     Output("g-pipeline", "figure"),
     Output("g-trayectorias", "figure"),
     Output("g-share", "figure"),
+    Output("g-contribution", "figure"),
     Input("year-range", "value"),
 )
 def update_all(year_range):
     yr0, yr1 = year_range
     eg = df_egreso.filter(pl.col("año").is_between(yr0, yr1))
     gr = df_grado.filter(pl.col("año").is_between(yr0, yr1))
-    me = df_examenes.filter(pl.col("año").is_between(yr0, yr1))
+    me = df_titulos.filter(pl.col("año").is_between(yr0, yr1))
     ig = df_ingreso_nivel.filter(pl.col("año").is_between(yr0, yr1))
 
     k = compute_kpis(yr0, yr1)
@@ -560,6 +648,7 @@ def update_all(year_range):
         fig_pipeline(yr0, yr1),
         fig_trayectorias(me),
         fig_share(me),
+        fig_contribution(yr0, yr1),
     )
 
 @app.callback(
@@ -570,7 +659,7 @@ def update_all(year_range):
 )
 def update_trajectory(year_range, method, y_metric):
     yr0, yr1 = year_range
-    d = df_examenes.filter(pl.col("año").is_between(yr0, yr1))
+    d = df_titulos.filter(pl.col("año").is_between(yr0, yr1))
     return fig_trajectory(d, method, y_metric)
 
 if __name__ == "__main__":

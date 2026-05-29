@@ -1,5 +1,5 @@
 """Extract the four sections of the 'egr y tit' sheet from every UNAM yearbook
-in data/unam/ and write one CSV per section into egresos_y_titulacion/.
+in data/unam/general/ and write one CSV per section into egresos_y_titulacion/.
 
 Each yearbook file is named YYYY.xls(x). The sheet contains, in order:
   1. EGRESO
@@ -8,6 +8,11 @@ Each yearbook file is named YYYY.xls(x). The sheet contains, in order:
   4. TÍTULOS EXPEDIDOS
 
 Sections are delimited by a row whose first cell is 'UNAM'.
+
+In 2007.xls the sheet is laid out one column to the right (sections 1 and 4
+keep `UNAM` and the title in column B; every data row holds categoria in
+column B and valor in column C). `pick_pair` collapses that shift by taking
+the first non-empty cell as categoria and the cell to its right as valor.
 """
 
 import csv
@@ -17,7 +22,7 @@ from pathlib import Path
 import openpyxl
 import xlrd
 
-DATA_DIR = Path("data/unam")
+DATA_DIR = Path("data/unam/general")
 OUT_DIR = Path("data/unam_egresos_y_titulacion")
 
 SECTION_FILES = [
@@ -31,23 +36,34 @@ FOOTER_PREFIX = "Para mayor información"
 
 
 def read_sheet_rows(path: Path) -> list[list]:
-    """Return the rows of the 'egr y tit' sheet as a list of [col_a, col_b] lists."""
+    """Return rows of the 'egr y tit' sheet as up-to-4-cell lists."""
     if path.suffix == ".xls":
         wb = xlrd.open_workbook(str(path))
         name = next(n for n in wb.sheet_names() if "egr" in n.lower())
         ws = wb.sheet_by_name(name)
-        rows = []
-        for r in range(ws.nrows):
-            a = ws.cell_value(r, 0)
-            b = ws.cell_value(r, 1) if ws.ncols > 1 else ""
-            rows.append([a, b])
-        return rows
+        return [[ws.cell_value(r, c) if c < ws.ncols else None for c in range(4)]
+                for r in range(ws.nrows)]
 
     wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
     name = next(n for n in wb.sheetnames if "egr" in n.lower())
     ws = wb[name]
-    return [[row[0], row[1] if len(row) > 1 else None]
+    return [[row[c] if c < len(row) else None for c in range(4)]
             for row in ws.iter_rows(values_only=True)]
+
+
+def pick_pair(row: list) -> tuple:
+    """Return (categoria, valor) by skipping leading empty cells.
+
+    Standard layout has categoria in col 0; 2007.xls shifts it to col 1.
+    """
+    for i, v in enumerate(row):
+        if v is None:
+            continue
+        if isinstance(v, str) and not v.strip():
+            continue
+        nxt = row[i + 1] if i + 1 < len(row) else None
+        return v, nxt
+    return None, None
 
 
 def split_sections(rows: list[list]) -> list[list[list]]:
@@ -122,7 +138,8 @@ def main() -> None:
 
     for path in files:
         year = parse_year(path.name)
-        sections = split_sections(read_sheet_rows(path))
+        pairs = [pick_pair(r) for r in read_sheet_rows(path)]
+        sections = split_sections(pairs)
         if len(sections) != 4:
             print(f"WARNING: {path.name} has {len(sections)} sections, expected 4")
             continue
