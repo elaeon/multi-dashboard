@@ -17,6 +17,7 @@ mientras que el desglose por carrera es escolarizada únicamente y se
 extiende hasta 2025 con datos correctos.
 """
 
+import numpy as np
 import polars as pl
 import plotly.graph_objects as go
 import plotly.express as px
@@ -59,6 +60,15 @@ _CARRERA_ALIAS = {
     "Desarrollo y gestión interculturales":  "Desarrollo y Gestión Interculturales",
     "Manejo sustentable de zonas costeras":  "Manejo Sustentable de Zonas Costeras",
 }
+# Renombres ortográficos (~2020-2021): la cohorte vieja y la nueva son la misma
+# carrera. Se mapea el nombre viejo al actual (el que llega hasta 2025) para no
+# reportar una carrera "muerta" en 2020 + una "nueva" en 2021. Sin esto, las
+# gráficas de demanda muestran caídas/altas espurias de −100%/+∞.
+_CARRERA_RENAME = {
+    "Química Farmacéutica Biológica":     "Química Farmacéutico Biológica",
+    "Ingeniería Eléctrica y Electrónica": "Ingeniería Eléctrica Electrónica",
+}
+_CARRERA_FIX = {**_CARRERA_ALIAS, **_CARRERA_RENAME}
 
 # ── Carga y limpieza ────────────────────────────────────────────────────────
 
@@ -101,7 +111,7 @@ df_grado = (
 # pero ese archivo solo trae el desglose por método a partir de 2014.
 _titulos_raw = (
     pl.read_csv(f"{DATA}/titulacion_carreras.csv")
-    .with_columns(pl.col("carrera").replace(_CARRERA_ALIAS))
+    .with_columns(pl.col("carrera").replace(_CARRERA_FIX))
 )
 df_titulos = (
     _titulos_raw
@@ -130,7 +140,7 @@ _FOOTNOTE = r"^[a-z] "
 _eg_carr_raw = (
     pl.read_csv(f"{DATA}/egreso_carreras.csv")
     .filter(~pl.col("carrera").str.contains(_FOOTNOTE))
-    .with_columns(pl.col("carrera").replace(_CARRERA_ALIAS))
+    .with_columns(pl.col("carrera").replace(_CARRERA_FIX))
 )
 df_lic_egreso = (
     _eg_carr_raw.group_by("año").agg(pl.col("total").sum().alias("egreso_lic"))
@@ -170,7 +180,7 @@ METHOD_COLORS = {m: _METHOD_PALETTE[i % len(_METHOD_PALETTE)]
 _pob_lic_raw = (
     pl.read_csv(f"{DATA}/poblacion_escolar_lic.csv")
     .filter(~pl.col("carrera").str.contains(_FOOTNOTE))
-    .with_columns(pl.col("carrera").replace(_CARRERA_ALIAS))
+    .with_columns(pl.col("carrera").replace(_CARRERA_FIX))
 )
 
 # Algunas carreras/entidades en pob traen sufijo de pie de página ("Arquitecturab",
@@ -910,6 +920,301 @@ def fig_abandono_sexo(yr0: int, yr1: int, top_n: int) -> go.Figure:
     )
     return fig
 
+# ── Demanda por carrera (primer ingreso) ─────────────────────────────────────
+# df_carr_pob ya trae pi = pi_h+pi_m por (carrera, año). La demanda de una
+# carrera es su primer ingreso anual; el cambio entre dos años dice si crece o
+# decae. Tras el _CARRERA_RENAME, los renombres 2020/2021 ya no fingen muertes.
+MIN_PI_START = 100  # intake mínimo en el año inicial para evitar ruido de % change
+
+def fig_demanda_ranking(yr0: int, yr1: int, top_n: int) -> go.Figure:
+    """Barra divergente: carreras que más crecieron/decayeron en primer ingreso yr0→yr1."""
+    p0 = (df_carr_pob.filter(pl.col("año") == yr0)
+          .select(["carrera", pl.col("pi").alias("pi0")]))
+    p1 = (df_carr_pob.filter(pl.col("año") == yr1)
+          .select(["carrera", pl.col("pi").alias("pi1")]))
+    d = (
+        p0.join(p1, on="carrera", how="inner")
+        .filter(pl.col("pi0") >= MIN_PI_START)
+        .with_columns(((pl.col("pi1") - pl.col("pi0")) / pl.col("pi0") * 100).alias("chg"))
+        .sort("chg", descending=True)
+    )
+    if d.is_empty():
+        return go.Figure().update_layout(
+            title=f"Sin datos para {yr0}→{yr1}", **CHART_LAYOUT,
+        )
+    # top_n que más crecen + top_n que más caen, sin duplicar si hay pocas
+    growers = d.head(top_n)
+    shrinkers = d.tail(top_n)
+    sel = pl.concat([shrinkers, growers]).unique(subset=["carrera"], maintain_order=True) \
+            .sort("chg", descending=False)  # ascendente → mayores caídas abajo, crecimientos arriba
+
+    carreras = sel["carrera"].to_list()
+    chg = sel["chg"].to_list()
+    pi0 = sel["pi0"].to_list()
+    pi1 = sel["pi1"].to_list()
+    colors = ["#3BB273" if v >= 0 else "#E84855" for v in chg]
+
+    fig = go.Figure(go.Bar(
+        x=chg, y=carreras, orientation="h",
+        marker_color=colors,
+        customdata=list(zip(pi0, pi1)),
+        text=[f"{v:+.0f}%" for v in chg],
+        textposition="outside", textfont=dict(color="#CBD5E1", size=10),
+        hovertemplate=("<b>%{y}</b><br>"
+                       f"{yr0}: %{{customdata[0]:,}} → {yr1}: %{{customdata[1]:,}}<br>"
+                       "Cambio: %{x:+.0f}%<extra></extra>"),
+        cliponaxis=False,
+    ))
+    n = len(carreras)
+    fig.update_layout(
+        title=(
+            f"Carreras con mayor crecimiento y caída en demanda · primer ingreso {yr0}→{yr1}"
+            f"<br><span style='font-size:0.8em;color:#94A3B8'>"
+            f"verde = crece · rojo = decae · solo carreras con ≥ {MIN_PI_START} de primer ingreso en {yr0}</span>"
+        ),
+        height=max(360, n * 22 + 150),
+        xaxis=dict(title="% de cambio en primer ingreso", ticksuffix="%",
+                   gridcolor="#334155", zerolinecolor="#64748B"),
+        yaxis=dict(categoryorder="array", categoryarray=carreras,
+                   gridcolor="rgba(0,0,0,0)", automargin=True),
+        margin=dict(t=80, b=50, l=10, r=60),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#CBD5E1", showlegend=False,
+    )
+    return fig
+
+_DEMANDA_PALETTE = px.colors.qualitative.Plotly + px.colors.qualitative.Set2
+
+def fig_demanda_trend(carreras: list[str], yr0: int, yr1: int) -> go.Figure:
+    """Líneas de primer ingreso por carrera. Vacío = top 6 por ingreso en yr1."""
+    base = df_carr_pob.filter(pl.col("año").is_between(yr0, yr1))
+    if not carreras:
+        carreras = (
+            base.filter(pl.col("año") == yr1)
+            .sort("pi", descending=True).head(6)["carrera"].to_list()
+        )
+    fig = go.Figure()
+    for i, c in enumerate(sorted(carreras)):
+        sub = base.filter(pl.col("carrera") == c).sort("año")
+        if sub.is_empty():
+            continue
+        fig.add_trace(go.Scatter(
+            x=sub["año"].to_list(), y=sub["pi"].to_list(),
+            mode="lines+markers", name=c,
+            line=dict(color=_DEMANDA_PALETTE[i % len(_DEMANDA_PALETTE)], width=2.5),
+            marker=dict(size=6),
+            hovertemplate=f"<b>{c}</b><br>%{{x}}: %{{y:,}}<extra></extra>",
+        ))
+    fig.update_layout(
+        title="Primer ingreso anual por carrera",
+        height=460,
+        yaxis=dict(title="Primer ingreso", gridcolor="#334155", tickformat=",", rangemode="tozero"),
+        xaxis=dict(gridcolor="#334155", dtick=2),
+        legend=dict(orientation="h", y=-0.22, x=0, font=dict(size=10)),
+        margin=dict(t=50, b=90, l=10, r=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#CBD5E1",
+    )
+    return fig
+
+def fig_gender_scatter(yr0: int, yr1: int) -> go.Figure:
+    """Dispersión: %mujeres inscritas vs brecha de abandono (M−H) por carrera.
+
+    Prueba el efecto «el sexo minoritario abandona más»: entre más femenina la
+    carrera, más se inclina la brecha hacia que los hombres abandonen (y al revés).
+    """
+    agg = (
+        df_drop_carr_year.filter(pl.col("año").is_between(yr0, yr1))
+        .group_by("carrera")
+        .agg([
+            pl.col("insc_h").sum(), pl.col("insc_m").sum(),
+            pl.col("abandono_h").sum(), pl.col("abandono_m").sum(),
+        ])
+        .with_columns((pl.col("insc_h") + pl.col("insc_m")).alias("insc_total"))
+        .filter((pl.col("insc_total") >= MIN_INSCRITOS)
+                & (pl.col("insc_h") > 0) & (pl.col("insc_m") > 0))
+        .with_columns([
+            (pl.col("abandono_h") / pl.col("insc_h") * 100).alias("rate_h"),
+            (pl.col("abandono_m") / pl.col("insc_m") * 100).alias("rate_m"),
+            (pl.col("insc_m") / pl.col("insc_total") * 100).alias("pct_fem"),
+        ])
+        .with_columns((pl.col("rate_m") - pl.col("rate_h")).alias("gap"))
+    )
+    if agg.height < 3:
+        return go.Figure().update_layout(
+            title=f"Muestra insuficiente para {yr0}–{yr1}", **CHART_LAYOUT,
+        )
+
+    x = agg["pct_fem"].to_numpy()
+    y = agg["gap"].to_numpy()
+    # ajuste OLS y r de Pearson (scipy no disponible)
+    slope, intercept = np.polyfit(x, y, 1)
+    r = float(np.corrcoef(x, y)[0, 1])
+    xs_fit = np.array([x.min(), x.max()])
+    ys_fit = slope * xs_fit + intercept
+
+    colors = ["#E84855" if g > 0 else "#3BB273" for g in y]  # rojo = mujeres abandonan más
+    sizes = (agg["insc_total"].to_numpy()) ** 0.5
+    sizes = 6 + 24 * (sizes - sizes.min()) / (np.ptp(sizes) or 1)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=xs_fit, y=ys_fit, mode="lines",
+        line=dict(color="#94A3B8", width=2, dash="dash"),
+        name=f"Ajuste · r = {r:.2f}", hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode="markers",
+        marker=dict(color=colors, size=sizes, opacity=0.75,
+                    line=dict(color="#0F172A", width=1)),
+        customdata=list(zip(agg["carrera"].to_list(),
+                            agg["rate_m"].to_list(), agg["rate_h"].to_list(),
+                            agg["insc_total"].to_list())),
+        hovertemplate=("<b>%{customdata[0]}</b><br>"
+                       "%mujeres: %{x:.0f}%<br>"
+                       "Abandono M: %{customdata[1]:.1f}%  ·  H: %{customdata[2]:.1f}%<br>"
+                       "Brecha (M−H): %{y:+.1f} pp  ·  inscritos: %{customdata[3]:,}<extra></extra>"),
+        showlegend=False,
+    ))
+    fig.add_hline(y=0, line=dict(color="#64748B", width=1))
+    fig.update_layout(
+        title=(
+            f"¿El sexo minoritario abandona más? · {yr0}–{yr1}"
+            f"<br><span style='font-size:0.8em;color:#94A3B8'>"
+            f"cada punto = una carrera (tamaño = inscritos) · arriba/rojo = mujeres abandonan más · "
+            f"pendiente negativa ⇒ efecto minoría</span>"
+        ),
+        height=480,
+        xaxis=dict(title="% de mujeres inscritas", ticksuffix="%", gridcolor="#334155"),
+        yaxis=dict(title="Brecha de abandono M − H (pp)", ticksuffix=" pp", gridcolor="#334155"),
+        legend=dict(orientation="h", y=-0.18, x=0),
+        margin=dict(t=80, b=60, l=10, r=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#CBD5E1",
+    )
+    return fig
+
+# Carreras disponibles para el selector de tendencia de demanda
+DEMANDA_CARRERAS = sorted(df_carr_pob["carrera"].unique().to_list())
+
+MIN_AVG_EGRESO = 10  # promedio anual mínimo de egresados para filtrar ruido
+
+def fig_pipeline_ratios_carrera(yr0: int, yr1: int, sort_by: str, top_n: int) -> go.Figure:
+    """3-dot connected chart: tres ratios del pipeline por carrera, eje compartido 0-100%.
+
+    sort_by: 'r_ins_eg' | 'r_eg_tit' | 'r_ins_tit'
+    Todos los ratios son promedios anuales del rango, no tasas de cohorte.
+    - r_ins_eg  = egresados / inscritos  (qué fracción de inscritos egresa cada año)
+    - r_ins_tit = titulados / inscritos  (qué fracción de inscritos titula cada año)
+    - r_eg_tit  = titulados / egresados  (qué fracción de egresados obtiene título)
+    """
+    n_yrs = max(yr1 - yr0, 1)
+    pob = (
+        df_carr_pob.filter(pl.col("año").is_between(yr0, yr1))
+        .group_by("carrera")
+        .agg(((pl.col("pi") + pl.col("rei")).sum() / n_yrs).alias("avg_insc"))
+    )
+    eg = (
+        df_carr_eg.filter(pl.col("año").is_between(yr0, yr1))
+        .group_by("carrera")
+        .agg((pl.col("egreso").sum() / n_yrs).alias("avg_eg"))
+    )
+    tit = (
+        df_carr_tit.filter(pl.col("año").is_between(yr0, yr1))
+        .group_by("carrera")
+        .agg((pl.col("titulos").sum() / n_yrs).alias("avg_tit"))
+    )
+    agg = (
+        pob.join(eg, on="carrera", how="full", coalesce=True)
+        .join(tit, on="carrera", how="full", coalesce=True)
+        .with_columns([
+            pl.col("avg_insc").fill_null(0),
+            pl.col("avg_eg").fill_null(0),
+            pl.col("avg_tit").fill_null(0),
+        ])
+        .filter(pl.col("avg_eg") >= MIN_AVG_EGRESO)
+        .with_columns([
+            (pl.col("avg_eg")  / pl.col("avg_insc").replace(0, None) * 100).alias("r_ins_eg"),
+            (pl.col("avg_tit") / pl.col("avg_insc").replace(0, None) * 100).alias("r_ins_tit"),
+            (pl.col("avg_tit") / pl.col("avg_eg").replace(0, None)   * 100).alias("r_eg_tit"),
+        ])
+        .fill_null(0)
+    )
+
+    sort_col = sort_by if sort_by in ("r_ins_eg", "r_ins_tit", "r_eg_tit") else "r_ins_eg"
+    agg = agg.sort(sort_col, descending=False).tail(top_n)
+
+    if agg.is_empty():
+        return go.Figure().update_layout(title=f"Sin datos para {yr0}–{yr1}", **CHART_LAYOUT)
+
+    carreras  = agg["carrera"].to_list()
+    r_ins_eg  = agg["r_ins_eg"].to_list()
+    r_ins_tit = agg["r_ins_tit"].to_list()
+    r_eg_tit  = agg["r_eg_tit"].to_list()
+    avg_insc  = agg["avg_insc"].to_list()
+    avg_eg    = agg["avg_eg"].to_list()
+    avg_tit   = agg["avg_tit"].to_list()
+
+    # connector spans from leftmost to rightmost of the 3 dots per carrera
+    x_lines, y_lines = [], []
+    for a, b, c_, car in zip(r_ins_eg, r_ins_tit, r_eg_tit, carreras):
+        lo, hi = min(a, b, c_), max(a, b, c_)
+        x_lines += [lo, hi, None]
+        y_lines += [car, car, None]
+
+    traces = [
+        (r_ins_eg,  "Egresados / Inscritos",  "#F4A261",
+         list(zip(avg_insc, avg_eg)),
+         "<b>%{y}</b><br>Egresados/Inscritos: %{x:.1f}%"
+         "<br>Inscritos/año: %{customdata[0]:.0f}  ·  Egresados/año: %{customdata[1]:.0f}<extra></extra>"),
+        (r_ins_tit, "Titulados / Inscritos",  "#2E86AB",
+         list(zip(avg_insc, avg_tit)),
+         "<b>%{y}</b><br>Titulados/Inscritos: %{x:.1f}%"
+         "<br>Inscritos/año: %{customdata[0]:.0f}  ·  Titulados/año: %{customdata[1]:.0f}<extra></extra>"),
+        (r_eg_tit,  "Titulados / Egresados",  "#3BB273",
+         list(zip(avg_eg, avg_tit)),
+         "<b>%{y}</b><br>Titulados/Egresados: %{x:.1f}%"
+         "<br>Egresados/año: %{customdata[0]:.0f}  ·  Titulados/año: %{customdata[1]:.0f}<extra></extra>"),
+    ]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x_lines, y=y_lines, mode="lines",
+        line=dict(color="#334155", width=1.5),
+        showlegend=False, hoverinfo="skip",
+    ))
+    for vals, name, color, cdata, tmpl in traces:
+        fig.add_trace(go.Scatter(
+            x=vals, y=carreras, mode="markers", name=name,
+            marker=dict(color=color, size=10, line=dict(color="#0F172A", width=1)),
+            customdata=cdata,
+            hovertemplate=tmpl,
+        ))
+
+    sort_label = {
+        "r_ins_eg":  "Egresados / Inscritos",
+        "r_ins_tit": "Titulados / Inscritos",
+        "r_eg_tit":  "Titulados / Egresados",
+    }[sort_col]
+    n = len(carreras)
+    fig.update_layout(
+        title=(
+            f"Eficiencia del pipeline por carrera · promedio anual {yr0}–{yr1}"
+            f"<br><span style='font-size:0.8em;color:#94A3B8'>"
+            f"ordenado por {sort_label} · mínimo {MIN_AVG_EGRESO} egresados/año · top {top_n}</span>"
+        ),
+        height=max(400, n * 22 + 150),
+        xaxis=dict(title="% del grupo base", ticksuffix="%",
+                   gridcolor="#334155", range=[0, 105]),
+        yaxis=dict(categoryorder="array", categoryarray=carreras,
+                   gridcolor="rgba(0,0,0,0)", automargin=True),
+        legend=dict(orientation="h", y=-0.05, x=0),
+        margin=dict(t=90, b=70, l=10, r=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#CBD5E1",
+    )
+    return fig
+
 # ── Layout ────────────────────────────────────────────────────────────────────
 
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.DARKLY])
@@ -1055,6 +1360,90 @@ app.layout = dbc.Container([
             ]),
             dbc.Row([
                 dbc.Col(dcc.Graph(id="g-abandono"), md=12),
+            ], className="mb-3"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-gender-scatter"), md=12),
+            ]),
+        ]),
+        dbc.Tab(label="Demanda por carrera", tab_id="tab-demanda", children=[
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Mostrar top", style={"color": "#CBD5E1"}),
+                    dcc.Dropdown(
+                        id="demanda-topn",
+                        options=[{"label": f"Top {n} ↑ / {n} ↓", "value": n}
+                                 for n in [8, 12, 20]],
+                        value=12,
+                        clearable=False,
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                    ),
+                ], md=4),
+            ], className="mb-2 mt-3"),
+            dbc.Row([
+                dbc.Col(html.Div(
+                    "Cambio en primer ingreso entre los años extremos del rango seleccionado arriba. "
+                    "Carreras renombradas (p. ej. «Química Farmacéutico Biológica») se consolidan; "
+                    "Ingeniería Mecatrónica es un cierre real en 2021.",
+                    style={"color": "#94A3B8", "fontSize": "0.8rem", "marginBottom": "8px"},
+                ), md=12),
+            ]),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-demanda-ranking"), md=12),
+            ], className="mb-3"),
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Carreras a comparar (vacío = top 6 por ingreso)",
+                               style={"color": "#CBD5E1"}),
+                    dcc.Dropdown(
+                        id="demanda-carrera",
+                        options=[{"label": c, "value": c} for c in DEMANDA_CARRERAS],
+                        value=[], multi=True,
+                        placeholder="Seleccionar carreras…",
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                    ),
+                ], md=12),
+            ], className="mb-2"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-demanda-trend"), md=12),
+            ], className="mb-3"),
+            html.Hr(style={"borderColor": "#334155"}),
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Ordenar por", style={"color": "#CBD5E1"}),
+                    dcc.RadioItems(
+                        id="et-sort",
+                        options=[
+                            {"label": "  Egresados / Inscritos",  "value": "r_ins_eg"},
+                            {"label": "  Titulados / Inscritos",  "value": "r_ins_tit"},
+                            {"label": "  Titulados / Egresados",  "value": "r_eg_tit"},
+                        ],
+                        value="r_ins_eg",
+                        inline=True,
+                        inputStyle={"marginLeft": "14px", "marginRight": "4px"},
+                        style={"color": "#CBD5E1"},
+                    ),
+                ], md=8),
+                dbc.Col([
+                    html.Label("Mostrar top", style={"color": "#CBD5E1"}),
+                    dcc.Dropdown(
+                        id="et-topn",
+                        options=[{"label": f"Top {n}", "value": n} for n in [20, 40, 60]],
+                        value=40,
+                        clearable=False,
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                    ),
+                ], md=4),
+            ], className="mb-2"),
+            dbc.Row([
+                dbc.Col(html.Div(
+                    "Naranja = Egresados/Inscritos · Azul = Titulados/Inscritos · Verde = Titulados/Egresados. "
+                    "La barra conecta los tres puntos de cada carrera. "
+                    "Ordena por «Titulados/Egresados» para ver qué carreras retienen menos de sus egresados al momento de titularse.",
+                    style={"color": "#94A3B8", "fontSize": "0.8rem", "marginBottom": "6px"},
+                ), md=12),
+            ]),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="g-et-carrera"), md=12),
             ]),
         ]),
         dbc.Tab(label="Trayectorias por método", tab_id="tab-trayectorias", children=[
@@ -1162,6 +1551,42 @@ def update_flujo(carrera, year):
 def update_abandono(year_range, top_n):
     yr0, yr1 = year_range
     return fig_abandono_sexo(int(yr0), int(yr1), int(top_n))
+
+@app.callback(
+    Output("g-gender-scatter", "figure"),
+    Input("year-range", "value"),
+)
+def update_gender_scatter(year_range):
+    yr0, yr1 = year_range
+    return fig_gender_scatter(int(yr0), int(yr1))
+
+@app.callback(
+    Output("g-demanda-ranking", "figure"),
+    Input("year-range", "value"),
+    Input("demanda-topn", "value"),
+)
+def update_demanda_ranking(year_range, top_n):
+    yr0, yr1 = year_range
+    return fig_demanda_ranking(int(yr0), int(yr1), int(top_n))
+
+@app.callback(
+    Output("g-demanda-trend", "figure"),
+    Input("demanda-carrera", "value"),
+    Input("year-range", "value"),
+)
+def update_demanda_trend(carreras, year_range):
+    yr0, yr1 = year_range
+    return fig_demanda_trend(carreras or [], int(yr0), int(yr1))
+
+@app.callback(
+    Output("g-et-carrera", "figure"),
+    Input("year-range", "value"),
+    Input("et-sort", "value"),
+    Input("et-topn", "value"),
+)
+def update_et_carrera(year_range, sort_by, top_n):
+    yr0, yr1 = year_range
+    return fig_pipeline_ratios_carrera(int(yr0), int(yr1), sort_by, int(top_n))
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8050)
