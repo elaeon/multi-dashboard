@@ -926,12 +926,20 @@ def fig_abandono_sexo(yr0: int, yr1: int, top_n: int) -> go.Figure:
 # decae. Tras el _CARRERA_RENAME, los renombres 2020/2021 ya no fingen muertes.
 MIN_PI_START = 100  # intake mínimo en el año inicial para evitar ruido de % change
 
+_WINDOW = 3  # años promediados en cada extremo del rango
+
 def fig_demanda_ranking(yr0: int, yr1: int, top_n: int) -> go.Figure:
-    """Barra divergente: carreras que más crecieron/decayeron en primer ingreso yr0→yr1."""
-    p0 = (df_carr_pob.filter(pl.col("año") == yr0)
-          .select(["carrera", pl.col("pi").alias("pi0")]))
-    p1 = (df_carr_pob.filter(pl.col("año") == yr1)
-          .select(["carrera", pl.col("pi").alias("pi1")]))
+    """Barra divergente: carreras que más crecieron/decayeron en primer ingreso yr0→yr1.
+
+    Usa promedios de ventana de _WINDOW años en cada extremo para absorber picos anuales.
+    """
+    w = _WINDOW
+    lbl0 = f"{yr0}–{yr0 + w - 1}"
+    lbl1 = f"{yr1 - w + 1}–{yr1}"
+    p0 = (df_carr_pob.filter(pl.col("año").is_between(yr0, yr0 + w - 1))
+          .group_by("carrera").agg(pl.col("pi").mean().alias("pi0")))
+    p1 = (df_carr_pob.filter(pl.col("año").is_between(yr1 - w + 1, yr1))
+          .group_by("carrera").agg(pl.col("pi").mean().alias("pi1")))
     d = (
         p0.join(p1, on="carrera", how="inner")
         .filter(pl.col("pi0") >= MIN_PI_START)
@@ -942,11 +950,10 @@ def fig_demanda_ranking(yr0: int, yr1: int, top_n: int) -> go.Figure:
         return go.Figure().update_layout(
             title=f"Sin datos para {yr0}→{yr1}", **CHART_LAYOUT,
         )
-    # top_n que más crecen + top_n que más caen, sin duplicar si hay pocas
     growers = d.head(top_n)
     shrinkers = d.tail(top_n)
     sel = pl.concat([shrinkers, growers]).unique(subset=["carrera"], maintain_order=True) \
-            .sort("chg", descending=False)  # ascendente → mayores caídas abajo, crecimientos arriba
+            .sort("chg", descending=False)
 
     carreras = sel["carrera"].to_list()
     chg = sel["chg"].to_list()
@@ -961,7 +968,7 @@ def fig_demanda_ranking(yr0: int, yr1: int, top_n: int) -> go.Figure:
         text=[f"{v:+.0f}%" for v in chg],
         textposition="outside", textfont=dict(color="#CBD5E1", size=10),
         hovertemplate=("<b>%{y}</b><br>"
-                       f"{yr0}: %{{customdata[0]:,}} → {yr1}: %{{customdata[1]:,}}<br>"
+                       f"Promedio {lbl0}: %{{customdata[0]:,.0f}} → {lbl1}: %{{customdata[1]:,.0f}}<br>"
                        "Cambio: %{x:+.0f}%<extra></extra>"),
         cliponaxis=False,
     ))
@@ -970,7 +977,8 @@ def fig_demanda_ranking(yr0: int, yr1: int, top_n: int) -> go.Figure:
         title=(
             f"Carreras con mayor crecimiento y caída en demanda · primer ingreso {yr0}→{yr1}"
             f"<br><span style='font-size:0.8em;color:#94A3B8'>"
-            f"verde = crece · rojo = decae · solo carreras con ≥ {MIN_PI_START} de primer ingreso en {yr0}</span>"
+            f"promedio {lbl0} vs {lbl1} · verde = crece · rojo = decae · "
+            f"solo carreras con ≥ {MIN_PI_START} de primer ingreso promedio en {lbl0}</span>"
         ),
         height=max(360, n * 22 + 150),
         xaxis=dict(title="% de cambio en primer ingreso", ticksuffix="%",
@@ -1099,20 +1107,21 @@ DEMANDA_CARRERAS = sorted(df_carr_pob["carrera"].unique().to_list())
 
 MIN_AVG_EGRESO = 10  # promedio anual mínimo de egresados para filtrar ruido
 
-def fig_pipeline_ratios_carrera(yr0: int, yr1: int, sort_by: str, top_n: int) -> go.Figure:
+def fig_pipeline_ratios_carrera(yr0: int, yr1: int) -> go.Figure:
     """3-dot connected chart: tres ratios del pipeline por carrera, eje compartido 0-100%.
 
-    sort_by: 'r_ins_eg' | 'r_eg_tit' | 'r_ins_tit'
-    Todos los ratios son promedios anuales del rango, no tasas de cohorte.
-    - r_ins_eg  = egresados / inscritos  (qué fracción de inscritos egresa cada año)
-    - r_ins_tit = titulados / inscritos  (qué fracción de inscritos titula cada año)
-    - r_eg_tit  = titulados / egresados  (qué fracción de egresados obtiene título)
+    Base = reinscritos (rei), no inscritos totales (pi+rei), para reflejar estudiantes
+    en continuación sin contaminar con el primer ingreso del año.
+    - r_rei_eg  = egresados / reinscritos
+    - r_rei_tit = titulados / reinscritos
+    - r_eg_tit  = titulados / egresados
+    Todas las carreras con >= MIN_AVG_EGRESO, ordenadas por r_rei_eg ascendente.
     """
     n_yrs = max(yr1 - yr0, 1)
-    pob = (
+    rei = (
         df_carr_pob.filter(pl.col("año").is_between(yr0, yr1))
         .group_by("carrera")
-        .agg(((pl.col("pi") + pl.col("rei")).sum() / n_yrs).alias("avg_insc"))
+        .agg((pl.col("rei").sum() / n_yrs).alias("avg_rei"))
     )
     eg = (
         df_carr_eg.filter(pl.col("año").is_between(yr0, yr1))
@@ -1125,53 +1134,50 @@ def fig_pipeline_ratios_carrera(yr0: int, yr1: int, sort_by: str, top_n: int) ->
         .agg((pl.col("titulos").sum() / n_yrs).alias("avg_tit"))
     )
     agg = (
-        pob.join(eg, on="carrera", how="full", coalesce=True)
+        rei.join(eg, on="carrera", how="full", coalesce=True)
         .join(tit, on="carrera", how="full", coalesce=True)
         .with_columns([
-            pl.col("avg_insc").fill_null(0),
+            pl.col("avg_rei").fill_null(0),
             pl.col("avg_eg").fill_null(0),
             pl.col("avg_tit").fill_null(0),
         ])
         .filter(pl.col("avg_eg") >= MIN_AVG_EGRESO)
         .with_columns([
-            (pl.col("avg_eg")  / pl.col("avg_insc").replace(0, None) * 100).alias("r_ins_eg"),
-            (pl.col("avg_tit") / pl.col("avg_insc").replace(0, None) * 100).alias("r_ins_tit"),
-            (pl.col("avg_tit") / pl.col("avg_eg").replace(0, None)   * 100).alias("r_eg_tit"),
+            (pl.col("avg_eg")  / pl.col("avg_rei").replace(0, None) * 100).alias("r_rei_eg"),
+            (pl.col("avg_tit") / pl.col("avg_rei").replace(0, None) * 100).alias("r_rei_tit"),
+            (pl.col("avg_tit") / pl.col("avg_eg").replace(0, None)  * 100).alias("r_eg_tit"),
         ])
         .fill_null(0)
+        .sort("r_rei_eg", descending=False)
     )
-
-    sort_col = sort_by if sort_by in ("r_ins_eg", "r_ins_tit", "r_eg_tit") else "r_ins_eg"
-    agg = agg.sort(sort_col, descending=False).tail(top_n)
 
     if agg.is_empty():
         return go.Figure().update_layout(title=f"Sin datos para {yr0}–{yr1}", **CHART_LAYOUT)
 
     carreras  = agg["carrera"].to_list()
-    r_ins_eg  = agg["r_ins_eg"].to_list()
-    r_ins_tit = agg["r_ins_tit"].to_list()
+    r_rei_eg  = agg["r_rei_eg"].to_list()
+    r_rei_tit = agg["r_rei_tit"].to_list()
     r_eg_tit  = agg["r_eg_tit"].to_list()
-    avg_insc  = agg["avg_insc"].to_list()
+    avg_rei   = agg["avg_rei"].to_list()
     avg_eg    = agg["avg_eg"].to_list()
     avg_tit   = agg["avg_tit"].to_list()
 
-    # connector spans from leftmost to rightmost of the 3 dots per carrera
     x_lines, y_lines = [], []
-    for a, b, c_, car in zip(r_ins_eg, r_ins_tit, r_eg_tit, carreras):
+    for a, b, c_, car in zip(r_rei_eg, r_rei_tit, r_eg_tit, carreras):
         lo, hi = min(a, b, c_), max(a, b, c_)
         x_lines += [lo, hi, None]
         y_lines += [car, car, None]
 
     traces = [
-        (r_ins_eg,  "Egresados / Inscritos",  "#F4A261",
-         list(zip(avg_insc, avg_eg)),
-         "<b>%{y}</b><br>Egresados/Inscritos: %{x:.1f}%"
-         "<br>Inscritos/año: %{customdata[0]:.0f}  ·  Egresados/año: %{customdata[1]:.0f}<extra></extra>"),
-        (r_ins_tit, "Titulados / Inscritos",  "#2E86AB",
-         list(zip(avg_insc, avg_tit)),
-         "<b>%{y}</b><br>Titulados/Inscritos: %{x:.1f}%"
-         "<br>Inscritos/año: %{customdata[0]:.0f}  ·  Titulados/año: %{customdata[1]:.0f}<extra></extra>"),
-        (r_eg_tit,  "Titulados / Egresados",  "#3BB273",
+        (r_rei_eg,  "Egresados / Reinscritos", "#F4A261",
+         list(zip(avg_rei, avg_eg)),
+         "<b>%{y}</b><br>Egresados/Reinscritos: %{x:.1f}%"
+         "<br>Reinscritos/año: %{customdata[0]:.0f}  ·  Egresados/año: %{customdata[1]:.0f}<extra></extra>"),
+        (r_rei_tit, "Titulados / Reinscritos",  "#2E86AB",
+         list(zip(avg_rei, avg_tit)),
+         "<b>%{y}</b><br>Titulados/Reinscritos: %{x:.1f}%"
+         "<br>Reinscritos/año: %{customdata[0]:.0f}  ·  Titulados/año: %{customdata[1]:.0f}<extra></extra>"),
+        (r_eg_tit,  "Titulados / Egresados",    "#3BB273",
          list(zip(avg_eg, avg_tit)),
          "<b>%{y}</b><br>Titulados/Egresados: %{x:.1f}%"
          "<br>Egresados/año: %{customdata[0]:.0f}  ·  Titulados/año: %{customdata[1]:.0f}<extra></extra>"),
@@ -1191,17 +1197,12 @@ def fig_pipeline_ratios_carrera(yr0: int, yr1: int, sort_by: str, top_n: int) ->
             hovertemplate=tmpl,
         ))
 
-    sort_label = {
-        "r_ins_eg":  "Egresados / Inscritos",
-        "r_ins_tit": "Titulados / Inscritos",
-        "r_eg_tit":  "Titulados / Egresados",
-    }[sort_col]
     n = len(carreras)
     fig.update_layout(
         title=(
             f"Eficiencia del pipeline por carrera · promedio anual {yr0}–{yr1}"
             f"<br><span style='font-size:0.8em;color:#94A3B8'>"
-            f"ordenado por {sort_label} · mínimo {MIN_AVG_EGRESO} egresados/año · top {top_n}</span>"
+            f"ordenado por Egresados/Reinscritos · mínimo {MIN_AVG_EGRESO} egresados/año</span>"
         ),
         height=max(400, n * 22 + 150),
         xaxis=dict(title="% del grupo base", ticksuffix="%",
@@ -1408,37 +1409,10 @@ app.layout = dbc.Container([
             ], className="mb-3"),
             html.Hr(style={"borderColor": "#334155"}),
             dbc.Row([
-                dbc.Col([
-                    html.Label("Ordenar por", style={"color": "#CBD5E1"}),
-                    dcc.RadioItems(
-                        id="et-sort",
-                        options=[
-                            {"label": "  Egresados / Inscritos",  "value": "r_ins_eg"},
-                            {"label": "  Titulados / Inscritos",  "value": "r_ins_tit"},
-                            {"label": "  Titulados / Egresados",  "value": "r_eg_tit"},
-                        ],
-                        value="r_ins_eg",
-                        inline=True,
-                        inputStyle={"marginLeft": "14px", "marginRight": "4px"},
-                        style={"color": "#CBD5E1"},
-                    ),
-                ], md=8),
-                dbc.Col([
-                    html.Label("Mostrar top", style={"color": "#CBD5E1"}),
-                    dcc.Dropdown(
-                        id="et-topn",
-                        options=[{"label": f"Top {n}", "value": n} for n in [20, 40, 60]],
-                        value=40,
-                        clearable=False,
-                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
-                    ),
-                ], md=4),
-            ], className="mb-2"),
-            dbc.Row([
                 dbc.Col(html.Div(
-                    "Naranja = Egresados/Inscritos · Azul = Titulados/Inscritos · Verde = Titulados/Egresados. "
-                    "La barra conecta los tres puntos de cada carrera. "
-                    "Ordena por «Titulados/Egresados» para ver qué carreras retienen menos de sus egresados al momento de titularse.",
+                    "Naranja = Egresados/Reinscritos · Azul = Titulados/Reinscritos · Verde = Titulados/Egresados. "
+                    "Base: reinscritos (estudiantes en continuación), no inscritos totales. "
+                    "Ordenado por Egresados/Reinscritos ascendente.",
                     style={"color": "#94A3B8", "fontSize": "0.8rem", "marginBottom": "6px"},
                 ), md=12),
             ]),
@@ -1581,12 +1555,10 @@ def update_demanda_trend(carreras, year_range):
 @app.callback(
     Output("g-et-carrera", "figure"),
     Input("year-range", "value"),
-    Input("et-sort", "value"),
-    Input("et-topn", "value"),
 )
-def update_et_carrera(year_range, sort_by, top_n):
+def update_et_carrera(year_range):
     yr0, yr1 = year_range
-    return fig_pipeline_ratios_carrera(int(yr0), int(yr1), sort_by, int(top_n))
+    return fig_pipeline_ratios_carrera(int(yr0), int(yr1))
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8050)
