@@ -55,6 +55,19 @@ POS_COLOR = {1: "#FFD700", 2: "#A8A9AD", 3: "#CD7F32", 4: "#B87333",
 POS_LABEL = {1: "Champion", 2: "Runner-up", 3: "3rd Place", 4: "4th Place",
              5: "Quarter-final", 9: "Round of 16 / 1st KO", 17: "Group Stage"}
 
+HOSTS = {
+    1930: "Uruguay",      1934: "Italy",         1938: "France",
+    1950: "Brazil",       1954: "Switzerland",   1958: "Sweden",
+    1962: "Chile",        1966: "England",        1970: "Mexico",
+    1974: "Germany",      1978: "Argentina",      1982: "Spain",
+    1986: "Mexico",       1990: "Italy",          1994: "United States",
+    1998: "France",       2002: "South Korea",    2006: "Germany",
+    2010: "South Africa", 2014: "Brazil",         2018: "Russia",
+    2022: "Qatar",
+}
+
+POINT_MAP = {1: 7, 2: 5, 3: 4, 4: 3, 5: 2, 9: 1, 17: 0}
+
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 def load_data():
@@ -173,6 +186,16 @@ def load_data():
 
 df_m, df_long, team_year, pos_long, consistency, df_pos_wide = load_data()
 
+# Match-based positions (exact per-team ranks, goals as tiebreaker within each tier)
+_df_match_wide = pl.read_csv("data/fifa/worldcup_match_positions.csv")
+_match_year_cols = [c for c in _df_match_wide.columns if c != "country"]
+match_pos_long = (
+    _df_match_wide
+    .unpivot(index="country", on=_match_year_cols, variable_name="year_str", value_name="position")
+    .with_columns(pl.col("year_str").cast(pl.Int32).alias("year"))
+    .filter(pl.col("position").is_not_null())
+)
+
 # Pre-compute some global aggregates
 years_list = sorted(df_m["year"].unique().to_list())
 teams_list = sorted(
@@ -192,9 +215,114 @@ goals_by_year = (
 total_goals = int(df_m.select((pl.col("Home Team Score") + pl.col("Away Team Score")).sum())[0, 0])
 n_teams = df_long["team"].n_unique()
 
-# Position matrix for heatmap (wide → values array)
-pos_countries = df_pos_wide["country"].to_list()
-year_cols = [c for c in df_pos_wide.columns if c != "country"]
+# PPG per team per edition (for the timeline chart)
+ppg_by_team_year = (
+    team_year.with_columns(
+        ((pl.col("wins") * 3 + pl.col("draws")) / pl.col("matches")).round(3).alias("ppg")
+    )
+    .select(["year", "team", "ppg", "matches", "wins", "draws", "losses",
+             "goals_for", "goals_against"])
+)
+
+# Mean PPG for teams that exited at each knockout stage (reference lines)
+_ppg_stage_raw = (
+    ppg_by_team_year
+    .join(pos_long.rename({"country": "team"}), on=["team", "year"], how="inner")
+    .with_columns(
+        pl.when(pl.col("position").is_in([1, 2])).then(pl.lit("Final"))
+          .when(pl.col("position").is_in([3, 4])).then(pl.lit("Semi-final"))
+          .when(pl.col("position") == 5).then(pl.lit("Quarter-final"))
+          .when(pl.col("position") == 9).then(pl.lit("Round of 16"))
+          .otherwise(None)
+          .alias("stage_label")
+    )
+    .filter(pl.col("stage_label").is_not_null())
+    .group_by("stage_label")
+    .agg(pl.col("ppg").mean().round(2).alias("mean_ppg"))
+)
+stage_mean_ppg = {r["stage_label"]: r["mean_ppg"] for r in _ppg_stage_raw.iter_rows(named=True)}
+
+# All-time country stats table
+country_stats = (
+    team_year.group_by("team").agg([
+        pl.col("matches").sum(),
+        pl.col("wins").sum(),
+        pl.col("draws").sum(),
+        pl.col("losses").sum(),
+        pl.col("goals_for").sum().alias("goals"),
+        pl.col("goals_against").sum().alias("against"),
+    ])
+    .with_columns(
+        ((pl.col("wins") * 3 + pl.col("draws")) / pl.col("matches")).round(2).alias("ppg")
+    )
+    .sort("ppg", descending=True)
+    .rename({
+        "team": "Country", "matches": "Matches", "wins": "Wins",
+        "draws": "Draws", "losses": "Losses",
+        "goals": "Goals", "against": "Against",
+    })
+    .select(["Country", "Matches", "Wins", "Draws", "Losses", "Goals", "Against", "ppg"])
+    .rename({"ppg": "PPG"})
+)
+
+# ── Insight aggregates (computed once at startup) ─────────────────────────────
+
+# 1. Goals-per-match regression
+_yr = goals_by_year["year"].cast(pl.Float64).to_numpy()
+_gpm = goals_by_year["avg_goals"].to_numpy()
+_slope, _intercept = np.polyfit(_yr, _gpm, 1)
+_gpm_fit = (_slope * _yr + _intercept).tolist()
+_r2 = float(np.corrcoef(_yr, _gpm)[0, 1] ** 2)
+
+# 2. Champion consistency: median / best / worst position for every ever-champion
+_champ_countries = pos_long.filter(pl.col("position") == 1)["country"].unique().to_list()
+champion_stats = (
+    pos_long.filter(pl.col("country").is_in(_champ_countries))
+    .group_by("country").agg([
+        pl.col("position").median().alias("median_pos"),
+        pl.col("position").min().alias("best_pos"),
+        pl.col("position").max().alias("worst_pos"),
+        pl.col("position").count().alias("editions"),
+        (pl.col("position") == 1).sum().alias("titles"),
+    ])
+    .sort("median_pos", descending=True)   # worst at bottom → best at top in chart
+)
+
+# 3. Edition points for top 8 nations (1st=7pts … group=0pts)
+_pts_long = pos_long.with_columns(
+    pl.when(pl.col("position") == 1).then(7)
+    .when(pl.col("position") == 2).then(5)
+    .when(pl.col("position") == 3).then(4)
+    .when(pl.col("position") == 4).then(3)
+    .when(pl.col("position") == 5).then(2)
+    .when(pl.col("position") == 9).then(1)
+    .otherwise(0)
+    .alias("pts")
+)
+_top8 = (
+    _pts_long.group_by("country").agg(pl.col("pts").sum().alias("total_pts"))
+    .sort("total_pts", descending=True).head(8)["country"].to_list()
+)
+era_pts = _pts_long.filter(pl.col("country").is_in(_top8)).sort(["country", "year"])
+
+# 4. Host nation final positions
+_host_rows = []
+for _y, _host in HOSTS.items():
+    _r = pos_long.filter((pl.col("country") == _host) & (pl.col("year") == _y))
+    _host_rows.append({
+        "year": _y, "host": _host,
+        "position": int(_r["position"][0]) if len(_r) > 0 else None,
+    })
+host_perf = pl.DataFrame(_host_rows)
+
+# 5. Goals-per-match vs final position (per-match, not total — avoids games-played confound)
+gpm_pos = (
+    team_year
+    .with_columns((pl.col("goals_for") / pl.col("matches")).alias("gpm"))
+    .join(pos_long.rename({"country": "team"}), on=["team", "year"], how="inner")
+    .select(["team", "year", "gpm", "position", "matches"])
+    .filter(pl.col("position").is_not_null())
+)
 
 # ── Figure factories ──────────────────────────────────────────────────────────
 
@@ -262,75 +390,6 @@ def fig_stage_counts(d: pl.DataFrame) -> go.Figure:
         legend=dict(orientation="h", y=-0.25, x=0, font=dict(size=11)),
         margin=dict(t=40, b=90, l=10, r=10),
         height=400,
-    )
-    return fig
-
-
-def fig_position_heatmap() -> go.Figure:
-    """Country × year position matrix heatmap."""
-    z = []
-    text = []
-    for c in pos_countries:
-        row_z, row_t = [], []
-        for yc in year_cols:
-            val = df_pos_wide.filter(pl.col("country") == c)[yc][0]
-            row_z.append(val)
-            row_t.append(POS_LABEL.get(val, "—") if val is not None else "Did not participate")
-        z.append(row_z)
-        text.append(row_t)
-
-    colorscale = [
-        [0.00, "#FFD700"], [0.10, "#A8A9AD"], [0.25, "#CD7F32"],
-        [0.40, "#B87333"], [0.55, "#2E86AB"], [0.75, "#3BB273"],
-        [1.00, "#475569"],
-    ]
-
-    fig = go.Figure(go.Heatmap(
-        z=z, x=year_cols, y=pos_countries,
-        text=text, hovertemplate="<b>%{y}</b> %{x}<br>%{text}<extra></extra>",
-        colorscale=colorscale,
-        zmin=1, zmax=17,
-        showscale=True,
-        colorbar=dict(
-            tickvals=[1, 2, 3, 4, 5, 9, 17],
-            ticktext=["1st", "2nd", "3rd", "4th", "QF", "R16", "Group"],
-            title=dict(text="Position", font=dict(color="#CBD5E1")),
-            tickfont=dict(color="#CBD5E1"),
-        ),
-        xgap=1, ygap=1,
-    ))
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font_color="#CBD5E1",
-        title="Country × Year Position Matrix (RSSSF data)",
-        xaxis=dict(side="top", tickangle=-45),
-        height=max(500, len(pos_countries) * 12 + 120),
-        margin=dict(t=60, b=20, l=130, r=60),
-    )
-    return fig
-
-
-def fig_consistency_summary() -> go.Figure:
-    """Bar chart of consistency check results."""
-    counts = (
-        consistency
-        .group_by("consistency")
-        .agg(pl.len().alias("count"))
-        .sort("count", descending=True)
-    )
-    colors = {"match": "#3BB273", "mismatch": "#E84855", "undetermined": "#94A3B8"}
-    fig = go.Figure(go.Bar(
-        x=counts["consistency"].to_list(),
-        y=counts["count"].to_list(),
-        marker_color=[colors.get(c, "#64748B") for c in counts["consistency"].to_list()],
-        hovertemplate="<b>%{x}</b>: %{y} team-editions<extra></extra>",
-    ))
-    fig.update_layout(
-        **CHART_LAYOUT,
-        title="Consistency: Match-data stage vs RSSSF position",
-        height=300,
-        xaxis_title="", yaxis_title="Team-Editions",
     )
     return fig
 
@@ -429,6 +488,353 @@ def fig_team_wdl(country: str) -> go.Figure:
     return fig
 
 
+# Country list for the position tracker dropdown (from match-based positions CSV)
+_pos_countries_list = sorted(match_pos_long["country"].unique().to_list())
+_DEFAULT_NATIONS = ["Brazil", "Germany", "Argentina", "Italy", "France"]
+_LINE_PALETTE = [
+    "#FFD700", "#2E86AB", "#3BB273", "#F4A261", "#E84855",
+    "#A8A9AD", "#CD7F32", "#7C3AED", "#0EA5E9", "#F97316",
+    "#10B981", "#EC4899",
+]
+
+
+def fig_positions_multi(countries: list) -> go.Figure:
+    """Position over time for multiple countries, one line each (exact numeric positions)."""
+    fig = go.Figure()
+    for i, country in enumerate(countries):
+        d = match_pos_long.filter(pl.col("country") == country).sort("year")
+        if len(d) == 0:
+            continue
+        color = _LINE_PALETTE[i % len(_LINE_PALETTE)]
+        fig.add_trace(go.Scatter(
+            x=d["year"].to_list(), y=d["position"].to_list(),
+            mode="lines+markers", name=country,
+            line=dict(color=color, width=2),
+            marker=dict(size=9, color=color, line=dict(color="#0F172A", width=1)),
+            hovertemplate=f"<b>{country}</b> %{{x}}<br>Position: %{{y}}<extra></extra>",
+        ))
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title="Final Position per World Cup Edition",
+        yaxis=dict(
+            autorange="reversed", gridcolor="#334155",
+            title="Final Position",
+        ),
+        xaxis=dict(
+            gridcolor="#334155", title="Year",
+            tickmode="array", tickvals=years_list,
+            ticktext=[str(y) for y in years_list], tickangle=-45,
+        ),
+        legend=dict(orientation="h", y=-0.22, x=0, font=dict(size=11)),
+        margin=dict(b=90, t=40),
+        height=520,
+    )
+    return fig
+
+
+def fig_ppg_over_time(countries: list) -> go.Figure:
+    """PPG per World Cup edition for selected countries."""
+    fig = go.Figure()
+    for i, country in enumerate(countries):
+        d = ppg_by_team_year.filter(pl.col("team") == country).sort("year")
+        if len(d) == 0:
+            continue
+        color = _LINE_PALETTE[i % len(_LINE_PALETTE)]
+        fig.add_trace(go.Scatter(
+            x=d["year"].to_list(),
+            y=d["ppg"].to_list(),
+            mode="lines+markers",
+            name=country,
+            line=dict(color=color, width=2),
+            marker=dict(size=8, color=color, line=dict(color="#0F172A", width=1)),
+            customdata=list(zip(
+                d["wins"].to_list(), d["draws"].to_list(),
+                d["losses"].to_list(), d["matches"].to_list(),
+            )),
+            hovertemplate=(
+                f"<b>{country}</b> %{{x}}<br>"
+                "PPG: %{y:.2f}<br>"
+                "%{customdata[0]}W %{customdata[1]}D %{customdata[2]}L "
+                "(%{customdata[3]} matches)<extra></extra>"
+            ),
+        ))
+    fig.add_hline(y=1.0, line_dash="dot", line_color="#475569",
+                  annotation_text="1 pt/game", annotation_font_color="#64748B",
+                  annotation_position="bottom right")
+    _stage_lines = [
+        ("Round of 16",   "#3BB273"),
+        ("Quarter-final", "#F4A261"),
+        ("Semi-final",    "#CD7F32"),
+        ("Final",         "#FFD700"),
+    ]
+    for stage_label, color in _stage_lines:
+        val = stage_mean_ppg.get(stage_label)
+        if val is not None:
+            fig.add_hline(
+                y=val, line_dash="dash", line_color=color, line_width=1, opacity=0.6,
+                annotation_text=f"{stage_label} ({val:.2f})",
+                annotation_font_color=color, annotation_font_size=10,
+                annotation_position="top right",
+            )
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title="Points Per Game per World Cup Edition",
+        xaxis=dict(
+            gridcolor="#334155", title="Year",
+            tickmode="array", tickvals=years_list,
+            ticktext=[str(y) for y in years_list], tickangle=-45,
+        ),
+        yaxis=dict(gridcolor="#334155", title="PPG", range=[-0.1, 3.2]),
+        legend=dict(orientation="h", y=-0.22, x=0, font=dict(size=11)),
+        margin=dict(b=90, t=40),
+        height=440,
+    )
+    return fig
+
+
+def fig_h2h(matches: pl.DataFrame, team1: str, team2: str) -> go.Figure:
+    """Goal-difference timeline of all World Cup meetings between two teams."""
+    if len(matches) == 0:
+        fig = go.Figure()
+        fig.update_layout(**CHART_LAYOUT,
+                          title=f"{team1} vs {team2} — No World Cup encounters",
+                          height=300)
+        return fig
+
+    RESULT_COLORS = {"Win": "#3BB273", "Draw": "#F4A261", "Loss": "#E84855"}
+    fig = go.Figure()
+    for result, color in RESULT_COLORS.items():
+        sub = matches.filter(pl.col("result") == result)
+        if len(sub) == 0:
+            continue
+        scores = [f"{gf}–{ga}" for gf, ga in zip(sub["gf"].to_list(), sub["ga"].to_list())]
+        fig.add_trace(go.Scatter(
+            x=sub["year"].to_list(),
+            y=sub["gd"].to_list(),
+            mode="markers+text",
+            name=result,
+            marker=dict(color=color, size=16, line=dict(color="#0F172A", width=1)),
+            text=scores,
+            textposition="top center",
+            textfont=dict(color=color, size=11),
+            customdata=sub["Stage Name"].to_list(),
+            hovertemplate=(
+                "<b>%{x} · %{customdata}</b><br>"
+                f"{team1} %{{text}} {team2}<br>"
+                "Goal diff: %{y:+d}<extra></extra>"
+            ),
+        ))
+
+    fig.add_hline(y=0, line_color="#475569", line_dash="dot")
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title=f"{team1} vs {team2} — World Cup Encounters",
+        xaxis=dict(
+            gridcolor="#334155", title="Year",
+            tickmode="array", tickvals=years_list,
+            ticktext=[str(y) for y in years_list], tickangle=-45,
+        ),
+        yaxis=dict(gridcolor="#334155", title=f"Goal Difference ({team1})"),
+        legend=dict(orientation="h", y=1.1),
+        margin=dict(t=50, b=80),
+        height=420,
+    )
+    return fig
+
+
+# ── Insight figure factories ─────────────────────────────────────────────────
+
+def fig_goals_regression() -> go.Figure:
+    """Goals/match trend with linear regression line (Insights tab)."""
+    yr_list = goals_by_year["year"].to_list()
+    gpm_list = goals_by_year["avg_goals"].to_list()
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=yr_list, y=gpm_list, mode="lines+markers", name="Avg Goals/Match",
+        line=dict(color="#2E86AB", width=2), marker=dict(size=8, color="#2E86AB"),
+        hovertemplate="<b>%{x}</b>: %{y:.2f} goals/match<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=yr_list, y=_gpm_fit, mode="lines",
+        name=f"Trend ({_slope*10:+.3f}/decade)",
+        line=dict(color="#E84855", width=2, dash="dash"), hoverinfo="skip",
+    ))
+    fig.add_annotation(
+        x=1954, y=5.38, text="1954: 5.38 g/m<br>(Hungary era)",
+        showarrow=True, arrowhead=2, arrowcolor="#F4A261",
+        font=dict(color="#F4A261", size=11),
+        bgcolor="#1E293B", bordercolor="#F4A261", borderwidth=1,
+    )
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title=f"Goals/Match Decline — slope {_slope*10:.3f}/decade · R²={_r2:.2f} · p<0.001",
+        xaxis=dict(gridcolor="#334155", title="Year"),
+        yaxis=dict(gridcolor="#334155", title="Avg Goals/Match", range=[1.5, 6.5]),
+        legend=dict(orientation="h", y=1.12),
+        height=380,
+    )
+    return fig
+
+
+def fig_host_performance() -> go.Figure:
+    """Host nation final position per edition."""
+    d = host_perf.filter(pl.col("position").is_not_null()).sort("year")
+    pos_vals = d["position"].to_list()
+    colors = [POS_COLOR.get(p, "#64748B") for p in pos_vals]
+    labels = [POS_LABEL.get(p, str(p)) for p in pos_vals]
+    fig = go.Figure(go.Scatter(
+        x=d["year"].to_list(), y=pos_vals,
+        mode="markers+text",
+        marker=dict(color=colors, size=18, line=dict(color="#0F172A", width=1)),
+        text=d["host"].to_list(), textposition="top center",
+        customdata=labels,
+        hovertemplate="<b>%{text}</b> (%{x})<br>%{customdata}<extra></extra>",
+    ))
+    _mean_pos = float(d["position"].cast(pl.Float64).mean())
+    fig.add_hline(y=_mean_pos, line_dash="dash", line_color="#94A3B8",
+                  annotation_text=f"Mean pos {_mean_pos:.1f}",
+                  annotation_font_color="#94A3B8")
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title="Host Nation Finish — 6 of 22 hosts won outright (median: 4th)",
+        xaxis=dict(gridcolor="#334155", title="Year", tickmode="array",
+                   tickvals=d["year"].to_list(), tickangle=-45),
+        yaxis=dict(
+            gridcolor="#334155", autorange="reversed",
+            tickvals=[1, 2, 3, 4, 5, 9, 17],
+            ticktext=["Champion", "Runner-up", "3rd", "4th", "QF", "R16", "Group"],
+            title="Final Position",
+        ),
+        margin=dict(t=40, b=70),
+        height=380,
+    )
+    return fig
+
+
+def fig_champion_consistency() -> go.Figure:
+    """Dumbbell: best → median → worst position for each ever-champion nation."""
+    countries = champion_stats["country"].to_list()
+    medians  = champion_stats["median_pos"].to_list()
+    bests    = champion_stats["best_pos"].to_list()
+    worsts   = champion_stats["worst_pos"].to_list()
+    titles   = champion_stats["titles"].to_list()
+    editions = champion_stats["editions"].to_list()
+
+    x_lines, y_lines = [], []
+    for b, w, c in zip(bests, worsts, countries):
+        x_lines += [b, w, None]
+        y_lines += [c, c, None]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x_lines, y=y_lines, mode="lines",
+        line=dict(color="#475569", width=2), showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=bests, y=countries, mode="markers", name="Best finish",
+        marker=dict(color="#FFD700", size=10, symbol="circle-open",
+                    line=dict(color="#FFD700", width=2)),
+        hovertemplate="<b>%{y}</b><br>Best: pos %{x}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=worsts, y=countries, mode="markers", name="Worst finish",
+        marker=dict(color="#E84855", size=10),
+        hovertemplate="<b>%{y}</b><br>Worst: pos %{x}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=medians, y=countries, mode="markers", name="Median finish",
+        marker=dict(color="#2E86AB", size=14, symbol="diamond"),
+        customdata=list(zip(titles, editions)),
+        hovertemplate="<b>%{y}</b><br>Median: %{x:.1f} · %{customdata[0]} titles · %{customdata[1]} apps<extra></extra>",
+    ))
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title="Champion Nations — Position Range Across All Appearances",
+        xaxis=dict(
+            gridcolor="#334155", title="Final Position",
+            tickvals=[1, 2, 3, 4, 5, 9, 17],
+            ticktext=["1st", "2nd", "3rd", "4th", "QF", "R16", "Group"],
+            range=[0, 18],
+        ),
+        yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+        legend=dict(orientation="h", y=-0.18, x=0),
+        margin=dict(b=70, t=40, l=100),
+        height=max(300, len(countries) * 42 + 90),
+    )
+    return fig
+
+
+def fig_era_dominance() -> go.Figure:
+    """Edition points per year for top 8 nations (1st=7 … group=0)."""
+    _palette = ["#FFD700", "#2E86AB", "#3BB273", "#F4A261",
+                "#E84855", "#A8A9AD", "#CD7F32", "#B87333"]
+    fig = go.Figure()
+    for i, country in enumerate(_top8):
+        d = era_pts.filter(pl.col("country") == country).sort("year")
+        fig.add_trace(go.Scatter(
+            x=d["year"].to_list(), y=d["pts"].to_list(),
+            mode="lines+markers", name=country,
+            line=dict(color=_palette[i % len(_palette)], width=2),
+            marker=dict(size=6),
+            hovertemplate=f"<b>{country}</b> %{{x}}: %{{y}} pts<extra></extra>",
+        ))
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title="Edition Points — Top 8 Nations (Brazil peak 1994–2002; Germany peak 1982–1990)",
+        xaxis=dict(gridcolor="#334155", tickmode="array",
+                   tickvals=years_list, tickangle=-45, title="Year"),
+        yaxis=dict(gridcolor="#334155", title="Points",
+                   tickvals=[0, 1, 2, 3, 5, 7],
+                   ticktext=["Group", "R16", "QF", "4th", "2nd", "Champion"]),
+        legend=dict(orientation="h", y=-0.3, x=0, font=dict(size=11)),
+        margin=dict(b=100, t=40),
+        height=420,
+    )
+    return fig
+
+
+def fig_gpm_vs_position() -> go.Figure:
+    """Goals scored per match vs final position — avoids games-played confound."""
+    _agg = (
+        gpm_pos.group_by("position").agg(
+            pl.col("gpm").median().alias("median_gpm"),
+            pl.len().alias("n"),
+        ).sort("position")
+    )
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=gpm_pos["gpm"].to_list(), y=gpm_pos["position"].to_list(),
+        mode="markers",
+        marker=dict(color="#2E86AB", size=5, opacity=0.35),
+        customdata=list(zip(gpm_pos["team"].to_list(), gpm_pos["year"].to_list())),
+        hovertemplate="<b>%{customdata[0]}</b> %{customdata[1]}<br>%{x:.2f} gpm · pos %{y}<extra></extra>",
+        showlegend=False, name="",
+    ))
+    fig.add_trace(go.Scatter(
+        x=_agg["median_gpm"].to_list(), y=_agg["position"].to_list(),
+        mode="markers+lines",
+        marker=dict(color="#FFD700", size=12, symbol="diamond"),
+        line=dict(color="#FFD700", width=2, dash="dot"),
+        customdata=_agg["n"].to_list(),
+        name="Median gpm per tier",
+        hovertemplate="<b>Position %{y}</b><br>Median: %{x:.2f} gpm (n=%{customdata})<extra></extra>",
+    ))
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title="Goals Scored per Match vs Final Position — Spearman ρ = −0.59 (p<0.001)",
+        xaxis=dict(gridcolor="#334155", title="Goals Scored per Match"),
+        yaxis=dict(
+            gridcolor="#334155", autorange="reversed",
+            tickvals=[1, 2, 3, 4, 5, 9, 17],
+            ticktext=["Champion", "Runner-up", "3rd", "4th", "QF", "R16", "Group"],
+            title="Final Position",
+        ),
+        legend=dict(orientation="h", y=1.1),
+        height=400,
+    )
+    return fig
+
+
 # ── App layout ────────────────────────────────────────────────────────────────
 
 app = Dash(
@@ -445,41 +851,6 @@ def kpi(title, value, sub=""):
     ], style=CARD_STYLE), md=2)
 
 
-def _consistency_table():
-    """Render the mismatches as a DCC DataTable."""
-    mismatches = consistency.filter(pl.col("consistency") == "mismatch").sort(["year", "team"])
-    if len(mismatches) == 0:
-        return html.P("✓ No mismatches found between datasets.",
-                      style={"color": "#3BB273", "fontWeight": "600"})
-
-    rows = mismatches.select([
-        "year", "team", "max_stage_rank", "inferred_pos", "position",
-    ]).rename({
-        "year": "Year", "team": "Country",
-        "max_stage_rank": "Stage Rank (match data)",
-        "inferred_pos": "Inferred Pos",
-        "position": "RSSSF Pos",
-    }).to_dicts()
-
-    return dash_table.DataTable(
-        data=rows,
-        columns=[{"name": c, "id": c} for c in rows[0].keys()],
-        style_table={"overflowX": "auto"},
-        style_header={"backgroundColor": "#1E293B", "color": "#94A3B8", "fontWeight": "600"},
-        style_cell={"backgroundColor": "#0F172A", "color": "#CBD5E1", "border": "1px solid #334155"},
-        style_data_conditional=[
-            {"if": {"column_id": "Inferred Pos"}, "color": "#F4A261"},
-            {"if": {"column_id": "RSSSF Pos"},   "color": "#E84855"},
-        ],
-        page_size=20,
-    )
-
-
-# Consistency stats
-n_match = int(consistency.filter(pl.col("consistency") == "match").shape[0])
-n_mismatch = int(consistency.filter(pl.col("consistency") == "mismatch").shape[0])
-n_total = int(consistency.shape[0])
-pct_match = f"{n_match / n_total * 100:.1f}%"
 
 
 app.layout = html.Div(style={"backgroundColor": "#0F172A", "minHeight": "100vh", "padding": "24px"}, children=[
@@ -495,8 +866,6 @@ app.layout = html.Div(style={"backgroundColor": "#0F172A", "minHeight": "100vh",
         kpi("Matches", f"{len(df_m):,}"),
         kpi("Total Goals", f"{total_goals:,}", f"{total_goals/len(df_m):.2f} per match"),
         kpi("Countries", n_teams, "ever participated"),
-        kpi("Consistent entries", pct_match, f"{n_match}/{n_total} team-editions"),
-        kpi("Real mismatches", n_mismatch, "between datasets"),
     ], className="g-2 mb-4"),
 
     # Tabs
@@ -510,48 +879,33 @@ app.layout = html.Div(style={"backgroundColor": "#0F172A", "minHeight": "100vh",
             ], className="mt-3"),
         ]),
 
-        # ── Tab 2: Position Matrix ────────────────────────────────────────────
-        dcc.Tab(label="Position Matrix", style=TAB_STYLE, selected_style=TAB_SEL, children=[
-            html.P(
-                "Color = final position in each World Cup. "
-                "Gold = champion · Silver = runner-up · Bronze = 3rd/4th · "
-                "Blue = quarter-final · Green = round of 16 / first KO · "
-                "Grey = group stage. Blank = did not participate.",
-                style={"color": "#94A3B8", "marginTop": "16px", "fontSize": "0.85rem"},
-            ),
-            dcc.Graph(
-                figure=fig_position_heatmap(),
-                config={"displayModeBar": False},
-                style={"overflowY": "auto"},
-            ),
-        ]),
-
-        # ── Tab 3: Consistency Check ──────────────────────────────────────────
-        dcc.Tab(label="Consistency Check", style=TAB_STYLE, selected_style=TAB_SEL, children=[
+        # ── Tab 2: Position Tracker ───────────────────────────────────────────
+        dcc.Tab(label="Position Tracker", style=TAB_STYLE, selected_style=TAB_SEL, children=[
             dbc.Row([
                 dbc.Col([
-                    html.H5("Method", style={"color": "#F8FAFC", "marginTop": "16px"}),
-                    html.P([
-                        "For each team × edition, the ",
-                        html.B("furthest stage reached"), " in the match dataset is mapped "
-                        "to an expected final position and compared to the RSSSF-derived "
-                        "position. Pre-R16 eras (1930–1978) assign ",
-                        html.B("pos 9"), " to group-stage eliminates; post-R16 eras assign ",
-                        html.B("pos 17"), ". 1950 final-round and semi-final entries "
-                        "without a third-place match are marked undetermined.",
-                    ], style={"color": "#94A3B8", "fontSize": "0.9rem"}),
-                ], md=6),
-                dbc.Col(
-                    dcc.Graph(figure=fig_consistency_summary(), config={"displayModeBar": False}),
-                    md=6,
-                ),
+                    html.Label("Select nations to compare:",
+                               style={"color": "#94A3B8", "marginTop": "16px", "marginBottom": "6px",
+                                      "display": "block"}),
+                    dcc.Dropdown(
+                        id="positions-country-dropdown",
+                        options=[{"label": c, "value": c} for c in _pos_countries_list],
+                        value=_DEFAULT_NATIONS,
+                        multi=True,
+                        placeholder="Choose one or more countries…",
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                        className="mb-2",
+                    ),
+                ], md=12),
             ]),
-
-            html.H5("Mismatches", style={"color": "#F8FAFC", "marginTop": "8px"}),
-            _consistency_table(),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="positions-multi-chart", config={"displayModeBar": False}), md=12),
+            ]),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="positions-ppg-chart", config={"displayModeBar": False}), md=12),
+            ]),
         ]),
 
-        # ── Tab 4: Team Explorer ──────────────────────────────────────────────
+        # ── Tab 3: Team Explorer ─────────────────────────────────────────────
         dcc.Tab(label="Team Explorer", style=TAB_STYLE, selected_style=TAB_SEL, children=[
             dbc.Row([
                 dbc.Col([
@@ -574,11 +928,232 @@ app.layout = html.Div(style={"backgroundColor": "#0F172A", "minHeight": "100vh",
                 dbc.Col(dcc.Graph(id="team-wdl",   config={"displayModeBar": False}), md=6),
             ]),
         ]),
+
+        # ── Tab 4: Head to Head ───────────────────────────────────────────────
+        dcc.Tab(label="Head to Head", style=TAB_STYLE, selected_style=TAB_SEL, children=[
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Team 1:", style={"color": "#94A3B8", "marginTop": "16px"}),
+                    dcc.Dropdown(
+                        id="h2h-team1",
+                        options=[{"label": t, "value": t} for t in teams_list],
+                        value="Brazil",
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                        className="mb-3",
+                    ),
+                ], md=4),
+                dbc.Col([
+                    html.Label("Team 2:", style={"color": "#94A3B8", "marginTop": "16px"}),
+                    dcc.Dropdown(
+                        id="h2h-team2",
+                        options=[{"label": t, "value": t} for t in teams_list],
+                        value="Germany",
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                        className="mb-3",
+                    ),
+                ], md=4),
+            ]),
+            html.Div(id="h2h-kpis"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="h2h-chart", config={"displayModeBar": False}), md=12),
+            ]),
+        ]),
+
+        # ── Tab 5: Stats ──────────────────────────────────────────────────────
+        dcc.Tab(label="Stats", style=TAB_STYLE, selected_style=TAB_SEL, children=[
+            html.H5("Country Statistics", style={"color": "#F8FAFC", "marginTop": "16px", "marginBottom": "4px"}),
+            html.P("Aggregated across selected World Cup editions. Click any column header to sort.",
+                   style={"color": "#94A3B8", "fontSize": "0.85rem", "marginBottom": "16px"}),
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Edition range:", style={"color": "#94A3B8", "fontSize": "0.85rem", "marginBottom": "8px", "display": "block"}),
+                    dcc.RangeSlider(
+                        id="stats-year-slider",
+                        min=years_list[0],
+                        max=years_list[-1],
+                        step=None,
+                        marks={y: {"label": str(y), "style": {"color": "#94A3B8", "fontSize": "11px"}} for y in years_list},
+                        value=[years_list[0], years_list[-1]],
+                        allowCross=False,
+                    ),
+                ], md=12, style={"paddingBottom": "24px"}),
+            ]),
+            dash_table.DataTable(
+                id="stats-table",
+                data=country_stats.to_dicts(),
+                columns=[{"name": c, "id": c} for c in country_stats.columns],
+                sort_action="native",
+                sort_by=[{"column_id": "PPG", "direction": "desc"}],
+                style_table={"overflowX": "auto"},
+                style_header={
+                    "backgroundColor": "#1E293B", "color": "#94A3B8",
+                    "fontWeight": "600", "border": "1px solid #334155",
+                },
+                style_cell={
+                    "backgroundColor": "#0F172A", "color": "#CBD5E1",
+                    "border": "1px solid #1E293B",
+                    "textAlign": "center", "padding": "8px 14px",
+                    "fontFamily": "monospace",
+                },
+                style_cell_conditional=[
+                    {"if": {"column_id": "Country"}, "textAlign": "left",
+                     "fontFamily": "inherit", "fontWeight": "500"},
+                ],
+                style_data_conditional=[
+                    {"if": {"row_index": "odd"}, "backgroundColor": "#0D1B2A"},
+                    {"if": {"filter_query": "{PPG} >= 2", "column_id": "PPG"},
+                     "color": "#FFD700", "fontWeight": "700"},
+                    {"if": {"filter_query": "{PPG} < 1", "column_id": "PPG"},
+                     "color": "#E84855"},
+                ],
+                page_size=25,
+            ),
+        ]),
+
+        # ── Tab 6: Insights ───────────────────────────────────────────────────
+        dcc.Tab(label="Insights", style=TAB_STYLE, selected_style=TAB_SEL, children=[
+            html.H5("Key Statistical Findings", style={"color": "#F8FAFC", "marginTop": "16px", "marginBottom": "12px"}),
+            dbc.Row([
+                dbc.Col(html.Div([
+                    html.Div("−0.24 g/m per decade", style={"fontSize": "1.3rem", "fontWeight": "700", "color": "#E84855"}),
+                    html.Div("Scoring decline 1930–2022 · R²=0.57 · p<0.001", style={"fontSize": "0.78rem", "color": "#94A3B8"}),
+                ], style=CARD_STYLE), md=3),
+                dbc.Col(html.Div([
+                    html.Div("6 / 22 hosts won", style={"fontSize": "1.3rem", "fontWeight": "700", "color": "#FFD700"}),
+                    html.Div("Host nations: median finish 4th · mean 4.55", style={"fontSize": "0.78rem", "color": "#94A3B8"}),
+                ], style=CARD_STYLE), md=3),
+                dbc.Col(html.Div([
+                    html.Div("Brazil: floor pos 9", style={"fontSize": "1.3rem", "fontWeight": "700", "color": "#3BB273"}),
+                    html.Div("Only champion nation never group-stage eliminated", style={"fontSize": "0.78rem", "color": "#94A3B8"}),
+                ], style=CARD_STYLE), md=3),
+                dbc.Col(html.Div([
+                    html.Div("ρ = 0.38 momentum", style={"fontSize": "1.3rem", "fontWeight": "700", "color": "#2E86AB"}),
+                    html.Div("Prior finish predicts next, but regresses to mean", style={"fontSize": "0.78rem", "color": "#94A3B8"}),
+                ], style=CARD_STYLE), md=3),
+            ], className="g-2 mb-3"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(figure=fig_goals_regression(),      config={"displayModeBar": False}), md=6),
+                dbc.Col(dcc.Graph(figure=fig_host_performance(),       config={"displayModeBar": False}), md=6),
+            ], className="mt-2"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(figure=fig_champion_consistency(),   config={"displayModeBar": False}), md=5),
+                dbc.Col(dcc.Graph(figure=fig_era_dominance(),          config={"displayModeBar": False}), md=7),
+            ], className="mt-2"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(figure=fig_gpm_vs_position(),        config={"displayModeBar": False}), md=12),
+            ], className="mt-2"),
+        ]),
     ]),
 ])
 
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("h2h-chart", "figure"),
+    Output("h2h-kpis", "children"),
+    Input("h2h-team1", "value"),
+    Input("h2h-team2", "value"),
+)
+def update_h2h(team1, team2):
+    if not team1 or not team2 or team1 == team2:
+        empty = go.Figure(layout=dict(**CHART_LAYOUT,
+                                      xaxis=dict(visible=False), yaxis=dict(visible=False)))
+        return empty, []
+
+    matches = df_m.filter(
+        ((pl.col("home") == team1) & (pl.col("away") == team2)) |
+        ((pl.col("home") == team2) & (pl.col("away") == team1))
+    ).with_columns([
+        pl.when(pl.col("home") == team1)
+          .then(pl.col("Home Team Score"))
+          .otherwise(pl.col("Away Team Score"))
+          .alias("gf"),
+        pl.when(pl.col("home") == team1)
+          .then(pl.col("Away Team Score"))
+          .otherwise(pl.col("Home Team Score"))
+          .alias("ga"),
+        pl.when(pl.col("home") == team1)
+          .then(pl.col("Home Team Win"))
+          .otherwise(pl.col("Away Team Win"))
+          .alias("t1_won"),
+    ]).with_columns([
+        (pl.col("gf") - pl.col("ga")).alias("gd"),
+        pl.when(pl.col("t1_won") == 1).then(pl.lit("Win"))
+          .when(pl.col("Draw") == 1).then(pl.lit("Draw"))
+          .otherwise(pl.lit("Loss"))
+          .alias("result"),
+    ]).sort("year")
+
+    n_games = len(matches)
+    t1_wins = int((matches["result"] == "Win").sum())
+    draws   = int((matches["result"] == "Draw").sum())
+    t2_wins = n_games - t1_wins - draws
+    t1_goals = int(matches["gf"].sum())
+    t2_goals = int(matches["ga"].sum())
+
+    kpis_row = dbc.Row([
+        kpi(f"{team1} Wins", t1_wins),
+        kpi("Draws", draws),
+        kpi(f"{team2} Wins", t2_wins),
+        kpi("Matches", n_games),
+        kpi("Goals", f"{t1_goals}–{t2_goals}"),
+    ], className="g-2 mb-3")
+
+    return fig_h2h(matches, team1, team2), kpis_row
+
+
+@app.callback(
+    Output("stats-table", "data"),
+    Input("stats-year-slider", "value"),
+)
+def update_stats_table(year_range):
+    lo, hi = year_range
+    d = team_year.filter(pl.col("year").is_between(lo, hi))
+    stats = (
+        d.group_by("team").agg([
+            pl.col("matches").sum(),
+            pl.col("wins").sum(),
+            pl.col("draws").sum(),
+            pl.col("losses").sum(),
+            pl.col("goals_for").sum().alias("goals"),
+            pl.col("goals_against").sum().alias("against"),
+        ])
+        .with_columns(
+            ((pl.col("wins") * 3 + pl.col("draws")) / pl.col("matches")).round(2).alias("ppg")
+        )
+        .sort("ppg", descending=True)
+        .rename({
+            "team": "Country", "matches": "Matches", "wins": "Wins",
+            "draws": "Draws", "losses": "Losses",
+            "goals": "Goals", "against": "Against", "ppg": "PPG",
+        })
+        .select(["Country", "Matches", "Wins", "Draws", "Losses", "Goals", "Against", "PPG"])
+    )
+    return stats.to_dicts()
+
+
+@app.callback(
+    Output("positions-multi-chart", "figure"),
+    Input("positions-country-dropdown", "value"),
+)
+def update_positions_chart(selected):
+    if not selected:
+        return go.Figure(layout=dict(**CHART_LAYOUT,
+                                     yaxis=dict(visible=False), xaxis=dict(visible=False)))
+    return fig_positions_multi(selected)
+
+
+@app.callback(
+    Output("positions-ppg-chart", "figure"),
+    Input("positions-country-dropdown", "value"),
+)
+def update_positions_ppg_chart(selected):
+    if not selected:
+        return go.Figure(layout=dict(**CHART_LAYOUT,
+                                     xaxis=dict(visible=False), yaxis=dict(visible=False)))
+    return fig_ppg_over_time(selected)
+
 
 @app.callback(
     Output("team-positions", "figure"),
