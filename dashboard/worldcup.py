@@ -592,6 +592,69 @@ def fig_ppg_over_time(countries: list) -> go.Figure:
     return fig
 
 
+def fig_best5_ppg(countries: list) -> go.Figure:
+    """Top-5 PPG World Cup editions per selected country, sorted globally by PPG."""
+    rows = []
+    for i, country in enumerate(countries):
+        d = (
+            ppg_by_team_year.filter(pl.col("team") == country)
+            .sort("ppg", descending=True)
+            .head(5)
+        )
+        for row in d.iter_rows(named=True):
+            rows.append({
+                "country": country,
+                "label": f"{country} ({row['year']})",
+                "ppg": row["ppg"],
+                "wins": row["wins"],
+                "draws": row["draws"],
+                "losses": row["losses"],
+                "matches": row["matches"],
+            })
+
+    if not rows:
+        return go.Figure()
+
+    result = pl.DataFrame(rows).sort("ppg", descending=False)
+    country_colors = {c: _LINE_PALETTE[i % len(_LINE_PALETTE)] for i, c in enumerate(countries)}
+    bar_colors = [country_colors[c] for c in result["country"].to_list()]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=result["ppg"].to_list(),
+        y=result["label"].to_list(),
+        orientation="h",
+        marker_color=bar_colors,
+        customdata=list(zip(
+            result["wins"].to_list(), result["draws"].to_list(),
+            result["losses"].to_list(), result["matches"].to_list(),
+        )),
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "PPG: %{x:.2f}<br>"
+            "%{customdata[0]}W %{customdata[1]}D %{customdata[2]}L "
+            "(%{customdata[3]} matches)<extra></extra>"
+        ),
+        showlegend=False,
+    ))
+    for country in countries:
+        fig.add_trace(go.Bar(
+            x=[None], y=[None], orientation="h",
+            name=country, marker_color=country_colors[country],
+        ))
+
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title="Best 5 PPG Editions per Country",
+        xaxis=dict(gridcolor="#334155", title="PPG", range=[0, 3.5]),
+        yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+        legend=dict(orientation="h", y=-0.18, x=0),
+        margin=dict(t=40, b=70, l=10, r=10),
+        height=max(300, len(rows) * 28 + 80),
+    )
+    return fig
+
+
 def fig_h2h(matches: pl.DataFrame, team1: str, team2: str) -> go.Figure:
     """Goal-difference timeline of all World Cup meetings between two teams."""
     if len(matches) == 0:
@@ -1008,6 +1071,24 @@ app.layout = html.Div(style={"backgroundColor": "#0F172A", "minHeight": "100vh",
                 ],
                 page_size=25,
             ),
+            html.Hr(style={"borderColor": "#334155", "margin": "28px 0 20px"}),
+            html.H6("Best 5 PPG Editions", style={"color": "#F8FAFC", "marginBottom": "8px"}),
+            dbc.Row([
+                dbc.Col([
+                    dcc.Dropdown(
+                        id="best5-country-dropdown",
+                        options=[{"label": t, "value": t} for t in sorted(ppg_by_team_year["team"].unique().to_list())],
+                        value=_DEFAULT_NATIONS,
+                        multi=True,
+                        placeholder="Choose countries…",
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                        className="mb-2",
+                    ),
+                ], md=12),
+            ]),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="best5-ppg-chart", config={"displayModeBar": False}), md=12),
+            ]),
         ]),
 
         # ── Tab 6: Insights ───────────────────────────────────────────────────
@@ -1048,6 +1129,17 @@ app.layout = html.Div(style={"backgroundColor": "#0F172A", "minHeight": "100vh",
 
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("best5-ppg-chart", "figure"),
+    Input("best5-country-dropdown", "value"),
+)
+def update_best5_ppg(selected):
+    if not selected:
+        return go.Figure(layout=dict(**CHART_LAYOUT,
+                                     xaxis=dict(visible=False), yaxis=dict(visible=False)))
+    return fig_best5_ppg(selected)
+
 
 @app.callback(
     Output("h2h-chart", "figure"),
