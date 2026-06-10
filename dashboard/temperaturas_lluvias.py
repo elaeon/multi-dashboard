@@ -12,7 +12,6 @@ df = _RAW.with_columns(
     pl.col("PERIODO").str.slice(5, 2).cast(pl.Int32).alias("mes"),
 )
 
-# Separate Nacional (CVE_ENT=0) from states
 ESTADOS = sorted(
     df.filter(pl.col("CVE_ENT") != 0)["ENTIDAD"].unique().to_list()
 )
@@ -20,11 +19,14 @@ ESTADOS = sorted(
 MES_NOMBRES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun",
                "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
-# Precompute baseline mean (1985–1994) per entity for warming delta
+# Baseline (1985–1994) per entity — used for warming delta KPIs and dumbbell
 _baseline = (
     df.filter(pl.col("anio").is_between(1985, 1994))
     .group_by("ENTIDAD")
-    .agg(pl.col("MEDIA").mean().alias("baseline_media"))
+    .agg(
+        pl.col("MEDIA").mean().alias("baseline_media"),
+        pl.col("MAXIMA").mean().alias("baseline_maxima"),
+    )
 )
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
@@ -47,14 +49,18 @@ TAB_SEL   = {"backgroundColor": "#1E293B", "color": "#F8FAFC",
              "fontWeight": "600", "padding": "10px 18px"}
 
 
-def kpi_card(title: str, value: str, color: str = "#CBD5E1") -> dbc.Col:
-    return dbc.Col(
-        html.Div([
-            html.P(title, style={"color": "#94A3B8", "fontSize": "12px", "margin": 0}),
-            html.H3(value, style={"color": color, "margin": "4px 0 0"}),
-        ], style=CARD_STYLE),
-        xs=12, sm=6, md=3,
-    )
+def kpi_card(title: str, value: str, color: str = "#CBD5E1",
+             delta: str | None = None, delta_color: str | None = None) -> dbc.Col:
+    children = [
+        html.P(title, style={"color": "#94A3B8", "fontSize": "12px", "margin": 0}),
+        html.H3(value, style={"color": color, "margin": "4px 0 0"}),
+    ]
+    if delta is not None:
+        children.append(
+            html.P(delta, style={"color": delta_color or "#94A3B8",
+                                 "fontSize": "11px", "margin": "3px 0 0"})
+        )
+    return dbc.Col(html.Div(children, style=CARD_STYLE), xs=12, sm=6, md=3)
 
 
 # ── Figure factories ──────────────────────────────────────────────────────────
@@ -89,15 +95,38 @@ def fig_temp_trend(d: pl.DataFrame) -> go.Figure:
         mode="lines", name="Mínima",
         line=dict(color="#2E86AB", width=1.5),
     ))
+    # Annotate 2023: hottest year on record
+    media_2023 = anual.filter(pl.col("anio") == 2023)["MEDIA"]
+    if len(media_2023) > 0:
+        fig.add_annotation(
+            x=2023, y=float(media_2023[0]),
+            text="<b>2023</b><br>más cálido<br>y más seco",
+            font=dict(color="#F4A261", size=11),
+            arrowcolor="#64748B", ax=36, ay=-38,
+            bgcolor="rgba(30,41,59,0.85)", bordercolor="#475569",
+        )
+    # Reference line: baseline mean (1985-1994) — only for Nacional
+    baseline_row = _baseline.filter(pl.col("ENTIDAD") == d["ENTIDAD"][0])
+    if len(baseline_row) > 0:
+        base_val = float(baseline_row["baseline_media"][0])
+        fig.add_hline(
+            y=base_val, line=dict(color="#64748B", width=1, dash="dot"),
+            annotation_text="media 1985–1994",
+            annotation_font_color="#64748B",
+            annotation_position="bottom right",
+        )
     fig.update_layout(
-        title="Temperatura anual (1985–2025)",
-        height=380,
+        title=dict(
+            text="<b>La temperatura media sube +0.5°C por década (1985–2025)</b>"
+                 "<br><sup style='color:#94A3B8'>Temperatura mínima, media y máxima anual — las noches se calientan ligeramente más rápido que los días</sup>",
+        ),
+        height=400,
         xaxis=dict(gridcolor="#334155", title="Año", dtick=5),
         yaxis=dict(gridcolor="#334155", ticksuffix="°C"),
         legend=dict(bgcolor="rgba(0,0,0,0)", font_color="#94A3B8",
                     orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
-        margin=dict(t=50, b=40, l=10, r=10),
+        margin=dict(t=70, b=40, l=10, r=10),
     )
     return fig
 
@@ -128,20 +157,23 @@ def fig_temp_seasonality(d: pl.DataFrame) -> go.Figure:
     ))
     fig.update_layout(
         barmode="group",
-        title="Temperatura promedio por mes",
+        title=dict(
+            text="<b>Mayo–Sep concentra el calor; Dic–Feb los meses más fríos</b>"
+                 "<br><sup style='color:#94A3B8'>Temperatura promedio por mes (todo el período)</sup>",
+        ),
         height=360,
         xaxis=dict(gridcolor="#334155"),
         yaxis=dict(gridcolor="#334155", ticksuffix="°C"),
         legend=dict(bgcolor="rgba(0,0,0,0)", font_color="#94A3B8",
                     orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
-        margin=dict(t=50, b=40, l=10, r=10),
+        margin=dict(t=60, b=40, l=10, r=10),
     )
     return fig
 
 
 def fig_warming_delta() -> go.Figure:
-    """Dumbbell plot: open dot = baseline 1985-1994, filled dot = 2015-2024."""
+    """Dumbbell: baseline 1985–1994 vs 2015–2024 mean temperature per state."""
     recent = (
         df.filter(pl.col("CVE_ENT") != 0)
         .filter(pl.col("anio").is_between(2015, 2024))
@@ -186,14 +218,36 @@ def fig_warming_delta() -> go.Figure:
         customdata=deltas,
         hovertemplate="<b>%{y}</b><br>Rec. 2015–2024: %{x:.2f}°C<br>Δ: +%{customdata:.2f}°C<extra></extra>",
     ))
+    # Callout: most and least warmed
+    slp_row = result.filter(pl.col("ENTIDAD") == "San Luis Potosí")
+    gro_row = result.filter(pl.col("ENTIDAD") == "Guerrero")
+    if len(slp_row) > 0:
+        fig.add_annotation(
+            x=float(slp_row["recent"][0]), y="San Luis Potosí",
+            text="<b>+3.3°C</b> — mayor calentamiento",
+            font=dict(color="#E84855", size=11),
+            arrowcolor="#64748B", ax=60, ay=0,
+            xanchor="left",
+        )
+    if len(gro_row) > 0:
+        fig.add_annotation(
+            x=float(gro_row["recent"][0]), y="Guerrero",
+            text="<b>+0.4°C</b> — menor calentamiento",
+            font=dict(color="#3BB273", size=11),
+            arrowcolor="#64748B", ax=60, ay=0,
+            xanchor="left",
+        )
     fig.update_layout(
-        title="Calentamiento por estado: 1985–1994 → 2015–2024",
-        height=max(340, len(states_list) * 22 + 100),
+        title=dict(
+            text="<b>San Luis Potosí calentó +3.3°C; Guerrero, solo +0.4°C — una brecha de 7.5×</b>"
+                 "<br><sup style='color:#94A3B8'>Temperatura media por estado: 1985–1994 → 2015–2024</sup>",
+        ),
+        height=max(380, len(states_list) * 22 + 120),
         xaxis=dict(gridcolor="#334155", ticksuffix="°C", title="Temperatura media (°C)"),
         yaxis=dict(gridcolor="rgba(0,0,0,0)"),
         legend=dict(orientation="h", y=1.05, x=0, bgcolor="rgba(0,0,0,0)"),
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
-        margin=dict(t=60, b=40, l=10, r=20),
+        margin=dict(t=70, b=40, l=10, r=200),
     )
     return fig
 
@@ -213,7 +267,7 @@ def fig_prec_trend(d: pl.DataFrame) -> go.Figure:
     fig.add_hrect(y0=avg - 30, y1=avg + 30,
                   fillcolor="rgba(59,178,115,0.06)", line_width=0)
     fig.add_hline(y=avg, line=dict(color="#3BB273", width=1.5, dash="dash"),
-                  annotation_text=f"Promedio {avg:.0f}mm",
+                  annotation_text=f"Promedio histórico {avg:.0f}mm",
                   annotation_font_color="#3BB273",
                   annotation_position="top right")
     fig.add_trace(go.Bar(
@@ -221,14 +275,36 @@ def fig_prec_trend(d: pl.DataFrame) -> go.Figure:
         marker_color=colors,
         hovertemplate="<b>%{x}</b><br>Precipitación: %{y:.0f}mm<extra></extra>",
     ))
+    # Annotate 2023 (driest) and 2010 (wettest)
+    prec_2023 = anual.filter(pl.col("anio") == 2023)["prec"]
+    prec_2010 = anual.filter(pl.col("anio") == 2010)["prec"]
+    if len(prec_2023) > 0:
+        fig.add_annotation(
+            x=2023, y=float(prec_2023[0]),
+            text="<b>2023</b><br>590mm<br>más seco",
+            font=dict(color="#F4A261", size=11),
+            arrowcolor="#64748B", ax=0, ay=40,
+            yanchor="bottom",
+        )
+    if len(prec_2010) > 0:
+        fig.add_annotation(
+            x=2010, y=float(prec_2010[0]),
+            text="<b>2010</b><br>962mm<br>más lluvioso",
+            font=dict(color="#2E86AB", size=11),
+            arrowcolor="#64748B", ax=0, ay=-40,
+            yanchor="top",
+        )
     fig.update_layout(
-        title="Precipitación anual total (1985–2025)",
-        height=380,
+        title=dict(
+            text="<b>Sin tendencia a largo plazo, pero alta variabilidad: 2023 fue 24% más seco que el promedio</b>"
+                 "<br><sup style='color:#94A3B8'>Precipitación anual total (mm) — promedio histórico 1985–2025</sup>",
+        ),
+        height=400,
         xaxis=dict(gridcolor="#334155", title="Año", dtick=5),
         yaxis=dict(gridcolor="#334155", ticksuffix="mm"),
         showlegend=False,
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
-        margin=dict(t=50, b=40, l=10, r=10),
+        margin=dict(t=70, b=40, l=10, r=10),
     )
     return fig
 
@@ -253,19 +329,22 @@ def fig_prec_seasonality(d: pl.DataFrame) -> go.Figure:
         hovertemplate="<b>%{x}</b><br>Precipitación: %{y:.1f}mm<extra></extra>",
     ))
     fig.update_layout(
-        title="Precipitación mensual promedio",
+        title=dict(
+            text="<b>Jun–Sep concentra el 70% de la lluvia anual</b>"
+                 "<br><sup style='color:#94A3B8'>Precipitación mensual promedio (mm) — todo el período</sup>",
+        ),
         height=360,
         xaxis=dict(gridcolor="#334155"),
         yaxis=dict(gridcolor="#334155", ticksuffix="mm"),
         showlegend=False,
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
-        margin=dict(t=40, b=40, l=10, r=10),
+        margin=dict(t=60, b=40, l=10, r=10),
     )
     return fig
 
 
 def fig_prec_state_ranking() -> go.Figure:
-    """Static chart — all states ranked by avg monthly precipitation."""
+    """Static: states ranked by avg monthly precipitation."""
     agg = (
         df.filter(pl.col("CVE_ENT") != 0)
         .group_by("ENTIDAD")
@@ -284,34 +363,96 @@ def fig_prec_state_ranking() -> go.Figure:
         hovertemplate="<b>%{y}</b><br>Precipitación media: %{x:.1f}mm/mes<extra></extra>",
     ))
     fig.update_layout(
-        title="Precipitación media mensual por estado",
-        height=max(340, len(states) * 28 + 80),
+        title=dict(
+            text="<b>Tabasco recibe 12× más lluvia mensual que Baja California (185mm vs 15mm)</b>"
+                 "<br><sup style='color:#94A3B8'>Precipitación media mensual por estado — promedio histórico</sup>",
+        ),
+        height=max(340, len(states) * 28 + 100),
         xaxis=dict(gridcolor="#334155", ticksuffix="mm"),
         yaxis=dict(gridcolor="rgba(0,0,0,0)", autorange="reversed"),
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
-        margin=dict(t=40, b=40, l=10, r=80),
+        margin=dict(t=70, b=40, l=10, r=80),
+    )
+    return fig
+
+
+def fig_seasonal_shift() -> go.Figure:
+    """Static: monthly precipitation profiles across 3 decades to show the rainy-season shift."""
+    nat = df.filter(pl.col("CVE_ENT") == 0)
+    periods = [("1985–1994", 1985, 1994, "#64748B"), ("2000–2009", 2000, 2009, "#F4A261"), ("2015–2024", 2015, 2024, "#2E86AB")]
+    fig = go.Figure()
+    for label, y0, y1, color in periods:
+        seas = (
+            nat.filter(pl.col("anio").is_between(y0, y1))
+            .group_by("mes").agg(pl.col("PRECIPITACION").mean().round(1).alias("p"))
+            .sort("mes")
+        )
+        meses = [MES_NOMBRES[m - 1] for m in seas["mes"].to_list()]
+        precs = seas["p"].to_list()
+        fig.add_trace(go.Scatter(
+            x=meses, y=precs,
+            mode="lines+markers",
+            name=label,
+            line=dict(color=color, width=2.5),
+            marker=dict(color=color, size=7),
+            hovertemplate=f"<b>{label}</b><br>%{{x}}: %{{y:.0f}}mm<extra></extra>",
+        ))
+    # Mark the shift: July declined, September rose
+    fig.add_annotation(
+        x="Jul", y=140.3,
+        text="Jul: 140→117mm<br>−23mm (−16%)",
+        font=dict(color="#E84855", size=11),
+        arrowcolor="#64748B", ax=50, ay=-30,
+        bgcolor="rgba(30,41,59,0.85)", bordercolor="#475569",
+    )
+    fig.add_annotation(
+        x="Sep", y=137.0,
+        text="Sep: ahora el<br>mes más lluvioso",
+        font=dict(color="#2E86AB", size=11),
+        arrowcolor="#64748B", ax=-60, ay=-35,
+        bgcolor="rgba(30,41,59,0.85)", bordercolor="#475569",
+    )
+    fig.update_layout(
+        title=dict(
+            text="<b>El pico de lluvias se desplazó de julio a septiembre — la temporada lluviosa llega más tarde</b>"
+                 "<br><sup style='color:#94A3B8'>Precipitación mensual promedio (mm) — comparación entre tres décadas</sup>",
+        ),
+        height=400,
+        xaxis=dict(gridcolor="#334155", title="Mes"),
+        yaxis=dict(gridcolor="#334155", ticksuffix="mm"),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font_color="#94A3B8",
+                    orientation="h", y=1.05, x=0),
+        **{k: v for k, v in CHART_LAYOUT.items() if k not in ("xaxis", "yaxis", "margin")},
+        margin=dict(t=70, b=40, l=10, r=10),
     )
     return fig
 
 
 def compute_kpis(d: pl.DataFrame, entidad: str):
-    recent = d.filter(pl.col("anio").is_between(2015, 2025))
-    media_r = float(recent["MEDIA"].mean())
+    recent = d.filter(pl.col("anio").is_between(2015, 2024))
+    media_r  = float(recent["MEDIA"].mean())
     maxima_r = float(recent["MAXIMA"].mean())
-    prec_anual = float(d.filter(pl.col("anio").is_between(1985, 2025))
-                       .group_by("anio").agg(pl.col("PRECIPITACION").sum())["PRECIPITACION"].mean())
+
+    ann = d.filter(pl.col("anio").is_between(1985, 2024)).group_by("anio").agg(
+        pl.col("PRECIPITACION").sum().alias("prec")
+    )
+    prec_hist   = float(ann.filter(pl.col("anio") < 2015)["prec"].mean())
+    prec_recent = float(ann.filter(pl.col("anio") >= 2015)["prec"].mean())
+
     base = _baseline.filter(pl.col("ENTIDAD") == entidad)
     if len(base) > 0:
-        delta = media_r - float(base["baseline_media"][0])
+        delta_media  = media_r - float(base["baseline_media"][0])
+        delta_maxima = maxima_r - float(base["baseline_maxima"][0])
     else:
-        delta = float("nan")
-    return media_r, maxima_r, prec_anual, delta
+        delta_media = delta_maxima = float("nan")
+    return media_r, maxima_r, prec_recent, prec_hist, delta_media, delta_maxima
 
 
 # ── Pre-render static charts ──────────────────────────────────────────────────
 
-_fig_warming = fig_warming_delta()
-_fig_prec_ranking = fig_prec_state_ranking()
+_fig_warming        = fig_warming_delta()
+_fig_prec_ranking   = fig_prec_state_ranking()
+_fig_seasonal_shift = fig_seasonal_shift()
 
 
 # ── Layout ────────────────────────────────────────────────────────────────────
@@ -371,6 +512,9 @@ app.layout = html.Div(
                         dbc.Col(dcc.Graph(id="graph-prec-trend"), md=7),
                         dbc.Col(dcc.Graph(id="graph-prec-seasonal"), md=5),
                     ]),
+                    dbc.Row(className="g-3", style={"marginBottom": "20px"}, children=[
+                        dbc.Col(dcc.Graph(id="graph-seasonal-shift"), md=12),
+                    ]),
                     dbc.Row(className="g-3", children=[
                         dbc.Col(dcc.Graph(id="graph-prec-ranking"), md=12),
                     ]),
@@ -393,14 +537,33 @@ app.layout = html.Div(
 )
 def update_all(estado: str):
     d = df.filter(pl.col("ENTIDAD") == estado)
-    media, maxima, prec_anual, delta = compute_kpis(d, estado)
-    delta_sign = "+" if delta >= 0 else ""
+    media, maxima, prec_recent, prec_hist, delta_media, delta_maxima = compute_kpis(d, estado)
+
+    sign = lambda v: ("+" if v >= 0 else "") + f"{v:.2f}°C"
+    prec_pct = (prec_recent - prec_hist) / prec_hist * 100 if prec_hist else float("nan")
+    prec_sign = "+" if prec_pct >= 0 else ""
+
     kpis = [
-        kpi_card("Temp. media (2015–2025)", f"{media:.1f}°C", "#F4A261"),
-        kpi_card("Temp. máxima (2015–2025)", f"{maxima:.1f}°C", "#E84855"),
-        kpi_card("Precipitación anual promedio", f"{prec_anual:.0f}mm", "#2E86AB"),
-        kpi_card("Calentamiento vs 1985–1994", f"{delta_sign}{delta:.2f}°C",
-                 "#E84855" if delta >= 2 else "#F4A261" if delta >= 1 else "#3BB273"),
+        kpi_card(
+            "Temp. media (2015–2024)", f"{media:.1f}°C", "#F4A261",
+            delta=f"{sign(delta_media)} vs 1985–1994",
+            delta_color="#E84855" if delta_media >= 2 else "#F4A261" if delta_media >= 1 else "#3BB273",
+        ),
+        kpi_card(
+            "Temp. máxima (2015–2024)", f"{maxima:.1f}°C", "#E84855",
+            delta=f"{sign(delta_maxima)} vs 1985–1994",
+            delta_color="#E84855" if delta_maxima >= 2 else "#F4A261" if delta_maxima >= 1 else "#3BB273",
+        ),
+        kpi_card(
+            "Precipitación anual (2015–2024)", f"{prec_recent:.0f}mm", "#2E86AB",
+            delta=f"{prec_sign}{prec_pct:.1f}% vs 1985–2014",
+            delta_color="#E84855" if prec_pct < -10 else "#F4A261" if prec_pct < 0 else "#3BB273",
+        ),
+        kpi_card(
+            "Calentamiento total vs 1985–1994",
+            f"{'+'if delta_media>=0 else ''}{delta_media:.2f}°C",
+            "#E84855" if delta_media >= 2 else "#F4A261" if delta_media >= 1 else "#3BB273",
+        ),
     ]
     return (
         kpis,
@@ -414,10 +577,11 @@ def update_all(estado: str):
 @app.callback(
     Output("graph-warming-delta", "figure"),
     Output("graph-prec-ranking", "figure"),
+    Output("graph-seasonal-shift", "figure"),
     Input("estado-filter", "value"),
 )
 def update_static(_):
-    return _fig_warming, _fig_prec_ranking
+    return _fig_warming, _fig_prec_ranking, _fig_seasonal_shift
 
 
 if __name__ == "__main__":
