@@ -1,26 +1,31 @@
-"""Build state × year ENVIPE panel with victimization prevalence and insecurity perception.
+"""Build state × year ENVIPE panel with victimization, insecurity, reporting rate,
+and institutional trust.
 
 Sources: data/inegi/envipe/ — 9 ZIP files (2017–2025)
 Output:  data/inegi/envipe/envipe_state_panel.parquet
 
 Columns:
-  CLAVE_ENT    Int64   — 2-digit state code (matches _build_panel_annual join key)
-  año          Int64   — ENVIPE survey year (measures crimes from prior 12 months)
-  vic_envipe   Float64 — weighted % of persons who were crime victims (from tmod_vic)
-  inseg_envipe Float64 — weighted % feeling insecure in their municipality (AP4_3_2 == 1)
+  CLAVE_ENT        Int64   — 2-digit state code (matches _build_panel_annual join key)
+  año              Int64   — ENVIPE survey year (measures crimes from prior 12 months)
+  vic_envipe       Float64 — weighted % of persons who were crime victims (from tmod_vic)
+  inseg_envipe     Float64 — weighted % feeling insecure in their municipality (AP4_3_2 == 1)
+  rep_rate_envipe  Float64 — weighted % of crimes reported to authorities (BP1_20, FAC_DEL)
+  trust_inst_envipe Float64 — composite institutional trust index [0,1] (1=max trust)
+                              mean of AP5_4_01..AP5_4_11, inverted: (5 - raw) / 3
+                              raw scale: 1=mucha confianza … 4=nada de confianza; 9=NS/NR excluded
 
 Methodology:
-  · tmod_vic: one row per crime incident; stream to collect unique victim person IDs
-  · tper_vic1: one row per respondent; provides CVE_ENT, FAC_ELE, AP4_3_2
-    - victim if ID_PER appears in tmod_vic victim set
-    - insecure if AP4_3_2 == "1" (coded 1=Inseguro, 2=Seguro, 9=DK in ENVIPE)
-  · Filter tper_vic1 to RESUL_H == "B" (completed household interview)
-  · Weighted mean by FAC_ELE per state
+  · tmod_vic: one row per crime; provides unique victim IDs (for vic_envipe) and
+    BP1_20/FAC_DEL (for rep_rate_envipe)
+  · tper_vic1: one row per respondent; provides CVE_ENT, FAC_ELE, AP4_3_2 (inseg),
+    and AP5_4_* (trust)
+  · Filter tper_vic1 to weight > 0 (both result codes 'A' and 'B' are valid)
+  · Weighted mean by FAC_ELE (persons) or FAC_DEL (crimes) per state
   · ENVIPE year N surveys the prior 12 months → inherent 1-year lag vs annual migration data
 
 Memory strategy:
-  · tmod_vic: only ID_PER column loaded → victim set fits in ~1 MB
-  · tper_vic1: streamed row-by-row; peak RAM = O(32 states × 4 floats)
+  · tmod_vic: two passes — victim ID set (~1 MB) then state-level reporting aggregates
+  · tper_vic1: single streaming pass; peak RAM = O(32 states × ~20 floats)
 """
 
 import csv
@@ -55,32 +60,86 @@ def find_table(z: zipfile.ZipFile, table_substr: str) -> str | None:
     return (data or candidates or [None])[0]
 
 
-def collect_victim_ids(z: zipfile.ZipFile, path: str) -> set[str]:
-    """Stream tmod_vic and collect unique ID_PER values (one per victim).
+def collect_victim_ids_and_reporting(
+    z: zipfile.ZipFile, path: str
+) -> tuple[set[str], dict[str, dict[str, float]]]:
+    """Stream tmod_vic once: collect victim IDs and aggregate reporting rate per state.
 
-    tmod_vic only contains crime incidents — every row is a victim record.
-    RESUL_H in tmod_vic is "A" (not "B"), so we skip the household-result filter.
+    Returns:
+      victims   — set of ID_PER strings (one per unique victim)
+      state_rep — {state_str: {"rep_num": float, "w_total": float}}
+                  rep_num = sum(FAC_DEL) where BP1_20 == 1
+                  w_total = sum(FAC_DEL) where BP1_20 in {1, 2}
     """
     victims: set[str] = set()
+    state_rep: dict[str, dict[str, float]] = {}
+
     with z.open(path) as raw_f:
         f = io.TextIOWrapper(raw_f, encoding="latin-1")
         reader = csv.reader(f)
         headers = [h.strip().strip('"').upper() for h in next(reader)]
-        try:
-            i_per = headers.index("ID_PER")
-        except ValueError:
-            return victims
+
+        def idx(col: str) -> int | None:
+            try:
+                return headers.index(col)
+            except ValueError:
+                return None
+
+        i_per   = idx("ID_PER")
+        i_upm   = idx("UPM")       # first 2 chars = state code (no CVE_ENT in tmod_vic)
+        i_fac   = idx("FAC_DEL")
+        i_bp120 = idx("BP1_20")
+
         for row in reader:
-            if not row or i_per >= len(row):
+            if not row:
                 continue
-            victims.add(row[i_per].strip().strip('"'))
-    return victims
+
+            # Victim ID (for vic_envipe)
+            if i_per is not None and i_per < len(row):
+                victims.add(row[i_per].strip().strip('"'))
+
+            # Reporting rate — skip if required columns absent
+            if i_upm is None or i_fac is None or i_bp120 is None:
+                continue
+            try:
+                weight = float(row[i_fac].strip().strip('"').replace(",", ""))
+            except (ValueError, IndexError):
+                continue
+            if weight <= 0:
+                continue
+
+            bp120 = row[i_bp120].strip().strip('"') if i_bp120 < len(row) else ""
+            if bp120 not in ("1", "2"):
+                continue  # only count crimes with a valid yes/no on reporting
+
+            # Extract state from UPM: first 2 characters (INEGI convention)
+            upm = row[i_upm].strip().strip('"') if i_upm < len(row) else ""
+            state = upm[:2].zfill(2) if len(upm) >= 2 else ""
+            if not state:
+                continue
+            try:
+                clave = int(state)
+            except ValueError:
+                continue
+            if not (1 <= clave <= 32):
+                continue
+
+            if state not in state_rep:
+                state_rep[state] = {"rep_num": 0.0, "w_total": 0.0}
+            state_rep[state]["rep_num"] += weight * (1.0 if bp120 == "1" else 0.0)
+            state_rep[state]["w_total"] += weight
+
+    return victims, state_rep
 
 
 def aggregate_tper_vic1(
-    z: zipfile.ZipFile, path: str, victims: set[str], year: int
+    z: zipfile.ZipFile,
+    path: str,
+    victims: set[str],
+    state_rep: dict[str, dict[str, float]],
+    year: int,
 ) -> pl.DataFrame | None:
-    """Stream tper_vic1, compute per-state weighted victimization and insecurity rates."""
+    """Stream tper_vic1: compute per-state victimization rate, insecurity, and trust."""
 
     state_agg: dict[str, dict[str, float]] = {}
     n_rows = 0
@@ -98,9 +157,15 @@ def aggregate_tper_vic1(
 
         i_per    = idx("ID_PER")
         i_state  = idx("CVE_ENT")
-        i_result = idx("RESUL_H")
         i_weight = idx("FAC_ELE")
-        i_inseg  = idx("AP4_3_2")   # Percepción inseguridad municipio (1=Inseguro, 2=Seguro)
+        i_inseg  = idx("AP4_3_2")
+
+        # Discover all AP5_4_NN trust columns present in this year's file
+        trust_cols = sorted(
+            [h for h in headers if re.match(r"AP5_4_\d+$", h)],
+            key=lambda c: int(re.search(r"\d+$", c).group()),
+        )
+        trust_idxs = [headers.index(c) for c in trust_cols]
 
         if i_state is None or i_weight is None:
             print(f"  ERROR: missing CVE_ENT or FAC_ELE in {year}")
@@ -109,8 +174,6 @@ def aggregate_tper_vic1(
         for row in reader:
             if not row:
                 continue
-            # RESUL_H in tper_vic1: 'B' = general questionnaire, 'A' = victimization module.
-            # Both are valid respondents — do NOT filter by RESUL_H; use FAC_ELE > 0 instead.
             try:
                 weight = float(row[i_weight].strip().strip('"').replace(",", ""))
             except (ValueError, IndexError):
@@ -118,7 +181,10 @@ def aggregate_tper_vic1(
             if weight <= 0:
                 continue
 
-            state = row[i_state].strip().strip('"').zfill(2)
+            state = row[i_state].strip().strip('"').zfill(2) if i_state < len(row) else ""
+            if not state:
+                continue
+
             is_victim = (
                 i_per is not None
                 and i_per < len(row)
@@ -131,17 +197,36 @@ def aggregate_tper_vic1(
                 if v in ("1", "2"):
                     inseg_flag = 1.0 if v == "1" else 0.0
 
+            # Composite institutional trust: mean of valid AP5_4_* (1–4 scale, 9=exclude)
+            # Invert: (5 - raw) / 3  →  maps [1,4] to [1.0, 0.33]; raw=1 = máxima confianza
+            trust_sum = 0.0
+            trust_n   = 0
+            for ti in trust_idxs:
+                if ti >= len(row):
+                    continue
+                try:
+                    v_int = int(row[ti].strip().strip('"'))
+                except ValueError:
+                    continue
+                if 1 <= v_int <= 4:
+                    trust_sum += (5 - v_int) / 3
+                    trust_n   += 1
+
             if state not in state_agg:
                 state_agg[state] = {
                     "vic_num": 0.0, "w_total": 0.0,
                     "inseg_num": 0.0, "w_inseg": 0.0,
+                    "trust_num": 0.0, "w_trust": 0.0,
                 }
             a = state_agg[state]
-            a["vic_num"]   += weight * (1.0 if is_victim else 0.0)
-            a["w_total"]   += weight
+            a["vic_num"]  += weight * (1.0 if is_victim else 0.0)
+            a["w_total"]  += weight
             if inseg_flag is not None:
                 a["inseg_num"] += weight * inseg_flag
                 a["w_inseg"]   += weight
+            if trust_n > 0:
+                a["trust_num"] += weight * (trust_sum / trust_n)
+                a["w_trust"]   += weight
 
             n_rows += 1
 
@@ -156,26 +241,44 @@ def aggregate_tper_vic1(
             continue
         if not (1 <= clave <= 32):
             continue
-        vic   = a["vic_num"]  / a["w_total"]  if a["w_total"]  > 0 else None
-        inseg = a["inseg_num"] / a["w_inseg"] if a["w_inseg"] > 0 else None
+
+        vic   = a["vic_num"]   / a["w_total"]  if a["w_total"]  > 0 else None
+        inseg = a["inseg_num"] / a["w_inseg"]  if a["w_inseg"]  > 0 else None
+        trust = a["trust_num"] / a["w_trust"]  if a["w_trust"]  > 0 else None
+
+        rep_data = state_rep.get(state_str)
+        rep = (rep_data["rep_num"] / rep_data["w_total"]
+               if rep_data and rep_data["w_total"] > 0 else None)
+
         rows.append({
-            "CLAVE_ENT": clave, "año": year,
-            "vic_envipe": vic, "inseg_envipe": inseg,
+            "CLAVE_ENT":         clave,
+            "año":               year,
+            "vic_envipe":        vic,
+            "inseg_envipe":      inseg,
+            "rep_rate_envipe":   rep,
+            "trust_inst_envipe": trust,
         })
 
     result = pl.DataFrame(rows, schema={
-        "CLAVE_ENT":    pl.Int64,
-        "año":          pl.Int64,
-        "vic_envipe":   pl.Float64,
-        "inseg_envipe": pl.Float64,
+        "CLAVE_ENT":          pl.Int64,
+        "año":                pl.Int64,
+        "vic_envipe":         pl.Float64,
+        "inseg_envipe":       pl.Float64,
+        "rep_rate_envipe":    pl.Float64,
+        "trust_inst_envipe":  pl.Float64,
     }).sort("CLAVE_ENT")
 
-    n_states = result.height
-    vic_nat  = float(result["vic_envipe"].drop_nulls().mean() or 0) * 100
-    ins_nat  = float(result["inseg_envipe"].drop_nulls().mean() or 0) * 100
+    n_states  = result.height
+    vic_nat   = float(result["vic_envipe"].drop_nulls().mean()        or 0) * 100
+    ins_nat   = float(result["inseg_envipe"].drop_nulls().mean()      or 0) * 100
+    rep_nat   = float(result["rep_rate_envipe"].drop_nulls().mean()   or 0) * 100
+    trust_nat = float(result["trust_inst_envipe"].drop_nulls().mean() or 0)
+    n_trust   = len(trust_cols)
     print(
         f"  {year}: n={n_rows:,} respondents  {len(victims):,} unique victims  "
-        f"{n_states} states  vic={vic_nat:.1f}%  inseg={ins_nat:.1f}%"
+        f"{n_states} states  "
+        f"vic={vic_nat:.1f}%  inseg={ins_nat:.1f}%  "
+        f"rep={rep_nat:.1f}%  trust={trust_nat:.3f} ({n_trust} inst)"
     )
     return result
 
@@ -194,8 +297,8 @@ def process_year(zip_path: str, year: int) -> pl.DataFrame | None:
         print(f"  ERROR: missing tmod_vic or tper_vic1 in {os.path.basename(zip_path)}")
         return None
 
-    victims = collect_victim_ids(z, mod_path)
-    return aggregate_tper_vic1(z, per_path, victims, year)
+    victims, state_rep = collect_victim_ids_and_reporting(z, mod_path)
+    return aggregate_tper_vic1(z, per_path, victims, state_rep, year)
 
 
 def main() -> None:

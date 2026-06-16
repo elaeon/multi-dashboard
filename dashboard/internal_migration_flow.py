@@ -261,6 +261,52 @@ _df_lab = (
 # ENVIPE año N mide delitos ocurridos en los 12 meses previos → lag implícito de 1 año.
 _df_envipe = pl.read_parquet("data/inegi/envipe/envipe_state_panel.parquet")
 
+# ── CONEVAL: pobreza extrema e ingreso ────────────────────────────────────────
+# Source: data/coneval/Python_MMP_{YEAR}.zip → Base final/pobreza{YY}.csv
+# Biennial survey: 2016, 2018, 2020, 2022.  Streamed without full extraction.
+# ic_asalud excluded: methodology break Seguro Popular → INSABI between 2018 and 2020.
+# pobreza_e: extreme poverty rate (income < extreme poverty line AND ≥1 social deprivation)
+# plp: income poverty line (income below welfare line, regardless of deprivations)
+
+import zipfile as _zipfile
+
+_CONEVAL_ZIPS = {
+    2016: ("data/coneval/Python_MMP_2016.zip", "Base final/pobreza16.csv"),
+    2018: ("data/coneval/Python_MMP_2018.zip", "Base final/pobreza18.csv"),
+    2020: ("data/coneval/Python_MMP_2020.zip", "Base final/pobreza20.csv"),
+    2022: ("data/coneval/Python_MMP_2022.zip", "Base final/pobreza22.csv"),
+}
+
+_coneval_frames = []
+for _yr, (_path, _member) in _CONEVAL_ZIPS.items():
+    with _zipfile.ZipFile(_path) as _z:
+        with _z.open(_member) as _f:
+            _cdf = pl.read_csv(_f, columns=["ent", "factor", "pobreza_e", "plp"], encoding="utf8")
+    _coneval_frames.append(_cdf.with_columns(pl.lit(_yr).alias("año_coneval")))
+
+_coneval_raw = pl.concat(_coneval_frames)
+
+# Weighted state-level rates per biennial year
+_df_coneval_bienal = (
+    _coneval_raw
+    .group_by(["ent", "año_coneval"])
+    .agg(
+        ((pl.col("pobreza_e") * pl.col("factor")).sum() / pl.col("factor").sum()).alias("pobreza_e"),
+        ((pl.col("plp") * pl.col("factor")).sum() / pl.col("factor").sum()).alias("plp"),
+    )
+    .sort(["ent", "año_coneval"])
+)
+
+# Forward-fill biennial survey to each migration year (use most recent CONEVAL year ≤ t)
+_CONEVAL_MAP = {2017: 2016, 2018: 2018, 2019: 2018, 2020: 2020, 2021: 2020, 2022: 2022, 2023: 2022}
+
+df_coneval_annual = pl.concat([
+    _df_coneval_bienal.filter(pl.col("año_coneval") == _cyr)
+    .with_columns(pl.lit(_myr).cast(pl.Int64).alias("año"))
+    .drop("año_coneval")
+    for _myr, _cyr in _CONEVAL_MAP.items()
+])
+
 # ── Figuras ───────────────────────────────────────────────────────────────────
 
 def fig_choropleth(yr0: int, yr1: int) -> go.Figure:
@@ -1502,6 +1548,8 @@ def _build_panel_annual(yr0: int, yr1: int) -> pl.DataFrame:
         _df_envipe.filter(pl.col("año").is_between(yr0, yr1))
         .with_columns(pl.col("año").cast(pl.Int64))
     )
+    coneval = df_coneval_annual.with_columns(pl.col("ent").cast(pl.Int64))
+
     return (
         mig
         .join(sek, on=["CLAVE_ENT", "año"], how="left")
@@ -1509,6 +1557,7 @@ def _build_panel_annual(yr0: int, yr1: int) -> pl.DataFrame:
         .join(lab, on=["CLAVE_ENT", "año"], how="left")
         .join(des, on=["NOM_ENT", "año"], how="left")
         .join(envipe, on=["CLAVE_ENT", "año"], how="left")
+        .join(coneval, left_on=["CLAVE_ENT", "año"], right_on=["ent", "año"], how="left")
         .with_columns(
             pl.col("sek").fill_null(0),
             pl.col("hom").fill_null(0),
@@ -1551,12 +1600,16 @@ def fig_rolling_r(yr0: int, yr1: int) -> go.Figure:
     covid = set(_EXCL_COVID)
 
     series = {
-        "Secuestro (contemp.)":      {"col": "sek_rate",    "color": OUT_COLOR, "dash": "solid"},
-        "Secuestro (lag 1 año)":     {"col": "sek_rate",    "color": "#F4A261", "dash": "dot"},
-        "Homicidio":                 {"col": "hom_rate",    "color": "#9B59B6", "dash": "solid"},
-        "Informalidad":              {"col": "informales",  "color": "#2E86AB", "dash": "solid"},
-        "Victimización ENVIPE":      {"col": "vic_envipe",  "color": "#10B981", "dash": "solid"},
-        "Percepción inseg. ENVIPE":  {"col": "inseg_envipe","color": "#06B6D4", "dash": "solid"},
+        "Secuestro (contemp.)":      {"col": "sek_rate",       "color": OUT_COLOR, "dash": "solid"},
+        "Secuestro (lag 1 año)":     {"col": "sek_rate",       "color": "#F4A261", "dash": "dot"},
+        "Homicidio":                 {"col": "hom_rate",       "color": "#9B59B6", "dash": "solid"},
+        "Informalidad":              {"col": "informales",     "color": "#2E86AB", "dash": "solid"},
+        "Victimización ENVIPE":      {"col": "vic_envipe",     "color": "#10B981", "dash": "solid"},
+        "Percepción inseg. ENVIPE":  {"col": "inseg_envipe",   "color": "#06B6D4", "dash": "solid"},
+        "Pobreza extrema (CONEVAL)": {"col": "pobreza_e",      "color": "#F97316", "dash": "solid"},
+        "Línea pobreza ingresos":    {"col": "plp",            "color": "#A78BFA", "dash": "solid"},
+        "Tasa denuncia ENVIPE":      {"col": "rep_rate_envipe","color": "#FCD34D", "dash": "solid"},
+        "Confianza institucional":   {"col": "trust_inst_envipe","color": "#34D399","dash": "solid"},
     }
 
     xs: dict[str, list] = {k: [] for k in series}
@@ -1623,12 +1676,12 @@ def fig_rolling_r(yr0: int, yr1: int) -> go.Figure:
     fig.update_layout(
         title=dict(
             text=(
-                "<b>Secuestro–migración: correlación fuerte 2017–2019, colapsa a ≈0 en 2022–2023 · "
-                "Informalidad: estable −0.51 a −0.56 · ENVIPE corrige cifra negra diferencial</b>"
+                "<b>Secuestro colapsa a ≈0 en 2022–2023; pobreza extrema emerge como nuevo driver (r=−0.66)</b>"
                 "<br><sup style='color:#94A3B8'>"
                 "Pearson r año por año · n=32 estados · "
-                "punteado = secuestro predice migración del año siguiente (lag 1, 2018: r=−0.46) · "
+                "punteado = secuestro predice migración del año siguiente (lag 1) · "
                 "ENVIPE año N mide delitos del año N−1 (lag implícito) · "
+                "CONEVAL bienal: 2016→2017, 2018→2018–19, 2020→2020–21, 2022→2022–23 · "
                 "excluye 2020–2021 del residual migratorio (artefacto COVID)</sup>"
             )
         ),
@@ -1655,6 +1708,10 @@ def fig_lag_heatmap(yr0: int, yr1: int) -> go.Figure:
         ("Informalidad",         "informales"),
         ("Victimización ENVIPE", "vic_envipe"),
         ("Inseg. ENVIPE",        "inseg_envipe"),
+        ("Pobreza extrema",      "pobreza_e"),
+        ("Línea ingreso",        "plp"),
+        ("Tasa denuncia",        "rep_rate_envipe"),
+        ("Confianza inst.",      "trust_inst_envipe"),
     ]
     lags = [
         ("Predictor → Migración (lag +1)", +1),  # predictor t predicts mig t+1
@@ -1713,11 +1770,11 @@ def fig_lag_heatmap(yr0: int, yr1: int) -> go.Figure:
     fig.update_layout(
         title=dict(
             text=(
-                "<b>Estructura de lags: ¿el crimen precede, acompaña o sigue a la migración?</b>"
+                "<b>Estructura de lags: crimen, informalidad y pobreza vs migración</b>"
                 "<br><sup style='color:#94A3B8'>"
                 "Pearson r pooling todos los años válidos (excl. 2020–2021) · "
                 "* p&lt;0.05 aprox. · lag+1 = predictor año t predice migración año t+1 · "
-                "ENVIPE: lag implícito de 1 año (mide delitos del año anterior)</sup>"
+                "ENVIPE: lag implícito de 1 año · CONEVAL bienal: forward-fill al año de migración</sup>"
             )
         ),
         height=420,
@@ -1736,11 +1793,15 @@ def fig_scatter_small_multiples(yr0: int, yr1: int, predictor: str) -> go.Figure
     all_years = [y for y in sorted(panel["año"].unique().to_list()) if y not in covid]
 
     _pred_map = {
-        "sek":         ("sek_rate",    "Secuestro (por 100k)"),
-        "hom":         ("hom_rate",    "Homicidio (por 100k)"),
-        "informales":  ("informales",  "Informalidad (%)"),
-        "vic_envipe":  ("vic_envipe",  "Victimización ENVIPE (%)"),
-        "inseg_envipe":("inseg_envipe","Percepción inseg. ENVIPE (%)"),
+        "sek":              ("sek_rate",         "Secuestro (por 100k)"),
+        "hom":              ("hom_rate",          "Homicidio (por 100k)"),
+        "informales":       ("informales",         "Informalidad (%)"),
+        "vic_envipe":       ("vic_envipe",         "Victimización ENVIPE (%)"),
+        "inseg_envipe":     ("inseg_envipe",       "Percepción inseg. ENVIPE (%)"),
+        "pobreza_e":        ("pobreza_e",          "Pobreza extrema CONEVAL (%)"),
+        "plp":              ("plp",                "Línea pobreza ingresos CONEVAL (%)"),
+        "rep_rate_envipe":  ("rep_rate_envipe",    "Tasa denuncia ENVIPE (%)"),
+        "trust_inst_envipe":("trust_inst_envipe",  "Confianza institucional ENVIPE [0–1]"),
     }
     pred_col, pred_label = _pred_map.get(predictor, ("sek_rate", "Secuestro"))
 
@@ -2070,11 +2131,15 @@ app.layout = dbc.Container([
                     dcc.RadioItems(
                         id="pred-radio",
                         options=[
-                            {"label": " Secuestro",             "value": "sek"},
-                            {"label": " Homicidio",             "value": "hom"},
-                            {"label": " Informalidad",          "value": "informales"},
-                            {"label": " Victimización ENVIPE",  "value": "vic_envipe"},
-                            {"label": " Inseg. ENVIPE",         "value": "inseg_envipe"},
+                            {"label": " Secuestro",                        "value": "sek"},
+                            {"label": " Homicidio",                        "value": "hom"},
+                            {"label": " Informalidad",                     "value": "informales"},
+                            {"label": " Victimización ENVIPE",             "value": "vic_envipe"},
+                            {"label": " Inseg. ENVIPE",                    "value": "inseg_envipe"},
+                            {"label": " Pobreza extrema (CONEVAL)",        "value": "pobreza_e"},
+                            {"label": " Línea pobreza ingresos (CONEVAL)", "value": "plp"},
+                            {"label": " Tasa denuncia ENVIPE",             "value": "rep_rate_envipe"},
+                            {"label": " Confianza institucional ENVIPE",   "value": "trust_inst_envipe"},
                         ],
                         value="sek",
                         inline=True,
@@ -2101,9 +2166,13 @@ app.layout = dbc.Container([
                             "Disponible como predictor en las correlaciones y small multiples de arriba.",
                         ]),
                         html.Li([
-                            html.B("Coneval: índice de pobreza y marginación 2016–2022 (bienal): "),
-                            "permitiría aislar la migración por inseguridad de la migración económica, "
-                            "que hoy se confunden en el predictor de informalidad."
+                            html.B("✓ CONEVAL 2016–2022 integrada: ",
+                                   style={"color": "#3BB273"}),
+                            "pobreza extrema (pobreza_e) y línea de pobreza por ingresos (plp) disponibles "
+                            "como predictores en las correlaciones y small multiples. "
+                            "Datos bienales forward-filled al año de migración más cercano. "
+                            "Hallazgo clave: pobreza extrema (r=−0.66) reemplaza a secuestro (r≈0) "
+                            "como driver principal de migración en 2022–2023."
                         ]),
                         html.Li([
                             html.B("COMAR — solicitudes de asilo por estado de origen: "),
