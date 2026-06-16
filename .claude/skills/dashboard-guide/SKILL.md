@@ -13,7 +13,8 @@ description: Best practices for building Polars + Plotly + Dash dashboards — i
 
 The dashboard is an argument with exhibits, not a data inventory. Build it in this order:
 
-1. **Explore** (Phase 1) — schema, categories, ranges, artifacts.
+0. **Data overview** (Phase 0) — check for `DATA_OVERVIEW.md` in the dataset folder; if absent, run `data-explorer` then `statistical-data-analyst` to build it.
+1. **Explore** (Phase 1) — review the overview; spot-check schema, categories, ranges, artifacts with the Python snippets if needed.
 2. **Mine insights** (Phase 2) — run the recipes; pass findings through the artifact gate.
 3. **Write claims** (Phase 3) — one sentence per finding; present them to the user; claims pick the charts.
 4. **Build** (Phases 4–6) — architecture, theme, charts, annotations.
@@ -23,9 +24,31 @@ Never write a chart before you can state its claim. A hypothesis before explorin
 
 ---
 
+## Phase 0 — Data overview
+
+Before any exploration or chart work, check whether `DATA_OVERVIEW.md` already exists in the dataset folder.
+
+### If `data/<dataset>/DATA_OVERVIEW.md` exists
+
+Read it. It contains schema, column descriptions, value ranges, null rates, and flagged quirks. Use it as the primary source for Phase 1 — skip the manual Python snippets unless something looks inconsistent or the overview is missing a column you need.
+
+### If it does NOT exist — run both agents in sequence
+
+**Step 1 — Launch `data-explorer` agent** with this brief:
+
+> Explore `data/<dataset>/`. Profile every file: schema, row counts, column types, unique-value counts for categoricals, min/max/mean for numerics, null rates, and file formats. Write a comprehensive `DATA_OVERVIEW.md` inside that folder. Flag: columns with unexpected null rates, categoricals with fewer values than expected, numeric columns with wildly different scales, and any partial final-year patterns (which produce fake drops).
+
+**Step 2 — After `data-explorer` finishes, launch `statistical-data-analyst` agent** with this brief:
+
+> Read `data/<dataset>/DATA_OVERVIEW.md` and the underlying files. Run structured analysis: baseline rates, trends over time, concentration (who accounts for most of the total?), mix-shift check (does the aggregate trend hold within every subgroup?), candidate change-points, and artifact checks (partial years, category renames mid-series). Append a `## Key Insights` section to `DATA_OVERVIEW.md` with 3–6 findings ordered by surprise and impact — each as a one-sentence claim with a data reference. Also append a `## Priority Questions` section listing 3–5 questions the dashboard should answer.
+
+**Step 3 — Read `DATA_OVERVIEW.md`** and proceed to Phase 1 using the overview and insights as context.
+
+---
+
 ## Phase 1 — Explore before coding
 
-Run these before writing a single chart. Wrong assumptions here cause rewrites.
+Use `DATA_OVERVIEW.md` findings as context. Run the snippets below only to spot-check specific columns or fill gaps the overview left open. Wrong assumptions here cause rewrites.
 
 ```python
 # Column names and sample rows

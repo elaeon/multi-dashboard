@@ -307,6 +307,80 @@ df_coneval_annual = pl.concat([
     for _myr, _cyr in _CONEVAL_MAP.items()
 ])
 
+# ── Remesas Banxico (CA79) ────────────────────────────────────────────────────
+# Source: data/banxico/Consulta_20260615-174730348.csv
+# Quarterly state-level remittances (millions USD, 2003–2026). Wide format, 10-row header.
+# Aggregate 4 quarters → annual sum. Per-capita normalization in _build_panel_annual.
+
+_BANXICO_NAME_MAP = {
+    "Estado de México": "México",
+    "Coahuila":         "Coahuila de Zaragoza",
+    "Michoacán":        "Michoacán de Ocampo",
+    "Veracruz":         "Veracruz de Ignacio de la Llave",
+}
+
+import io as _io
+with open("data/banxico/Consulta_20260615-174730348.csv", encoding="latin1") as _f:
+    _bnx_lines = _f.readlines()
+_bnx_start = next(i for i, l in enumerate(_bnx_lines) if l.startswith('"Título"'))
+_raw_bnx = pl.read_csv(_io.StringIO("".join(_bnx_lines[_bnx_start:])))
+_bnx_date_cols = [c for c in _raw_bnx.columns if c[0].isdigit()]
+df_banxico_annual = (
+    _raw_bnx
+    .filter(pl.col("Título").str.contains("Remesas Familiares,"))
+    .with_columns(pl.col("Título").str.split(", ").list.get(1).alias("_state_raw"))
+    .filter(pl.col("_state_raw") != "TOTAL")
+    .with_columns(pl.col("_state_raw").replace(_BANXICO_NAME_MAP).alias("NOM_ENT"))
+    .select(["NOM_ENT"] + _bnx_date_cols)
+    .unpivot(index="NOM_ENT", variable_name="fecha", value_name="remesas")
+    .with_columns(pl.col("fecha").str.slice(6, 4).cast(pl.Int64).alias("año"))
+    .group_by(["NOM_ENT", "año"])
+    .agg(pl.col("remesas").sum().alias("remesas_mmusd"))
+)
+
+# ── CONAPO intensidad migratoria (emigración hacia EE.UU., 2020) ──────────────
+# Source: data/conapo/intensidad_migratoria/06_iim_mex_eeuu_2020_municipio.csv
+# Municipal level, census 2020. gim_dp2 grade is cross-year comparable.
+# CLAVE join: cve_ent (1–32) + cve_mun (EEEMMM) → 5-digit CLAVE matching df_mig_mun.
+
+_GRADE_COLORS = {
+    "muy alto": "#E84855",
+    "alto":     "#F97316",
+    "medio":    "#FCD34D",
+    "bajo":     "#3BB273",
+    "muy bajo": "#2E86AB",
+    "nulo":     "#475569",
+}
+_GRADE_ORDER = ["muy alto", "alto", "medio", "bajo", "muy bajo", "nulo"]
+
+_im_2020 = pl.read_csv(
+    "data/conapo/intensidad_migratoria/06_iim_mex_eeuu_2020_municipio.csv",
+    encoding="utf8-lossy",
+)
+df_intensidad_mun = (
+    _im_2020
+    .with_columns(
+        (pl.col("cve_ent").cast(pl.Utf8).str.zfill(2) +
+         (pl.col("cve_mun") - pl.col("cve_ent") * 1000).cast(pl.Utf8).str.zfill(3)
+        ).alias("CLAVE"),
+        pl.col("gim_dp2").str.to_lowercase().alias("grade"),
+    )
+    .select(["CLAVE", "cve_ent", "grade", "viv_rem", "viv_emig", "viv_circ", "viv_ret"])
+)
+
+# State-level: % municipalities with grade "alto" or "muy alto" (excluding "nulo")
+df_intensidad_state = (
+    df_intensidad_mun
+    .filter(pl.col("grade") != "nulo")
+    .group_by("cve_ent")
+    .agg(
+        (pl.col("grade").is_in(["alto", "muy alto"]).sum().cast(pl.Float64) /
+         pl.col("grade").count() * 100).alias("pct_alta_intensidad"),
+        pl.col("grade").count().alias("n_mun"),
+    )
+    .with_columns(pl.col("cve_ent").cast(pl.Int64))
+)
+
 # ── Figuras ───────────────────────────────────────────────────────────────────
 
 def fig_choropleth(yr0: int, yr1: int) -> go.Figure:
@@ -545,7 +619,7 @@ def fig_scatter_components(yr0: int, yr1: int) -> go.Figure:
     """Tasa de crecimiento natural vs tasa de migración neta por estado (burbuja)."""
     base = (
         df_mig_state.filter(pl.col("año").is_between(yr0, yr1))
-        .group_by("NOM_ENT")
+        .group_by(["CLAVE_ENT", "NOM_ENT"])
         .agg(
             pl.col("net_mig").sum(),
             pl.col("natural_growth").sum(),
@@ -555,12 +629,15 @@ def fig_scatter_components(yr0: int, yr1: int) -> go.Figure:
             (pl.col("net_mig")       / pl.col("pop_avg") * 1000).alias("mig_rate"),
             (pl.col("natural_growth") / pl.col("pop_avg") * 1000).alias("ng_rate"),
         ])
+        .join(df_intensidad_state.select(["cve_ent", "pct_alta_intensidad"]),
+              left_on="CLAVE_ENT", right_on="cve_ent", how="left")
     )
     x_vals = base["ng_rate"].to_numpy()
     y_vals = base["mig_rate"].to_numpy()
     pop    = base["pop_avg"].to_numpy()
     sizes  = 8 + 28 * (pop ** 0.5 - pop.min() ** 0.5) / (pop.max() ** 0.5 - pop.min() ** 0.5 + 1)
     colors = [IN_COLOR if v >= 0 else OUT_COLOR for v in y_vals]
+    pct_int = base["pct_alta_intensidad"].fill_null(0).to_list()
 
     fig = go.Figure()
     fig.add_hline(y=0, line=dict(color="#475569", width=1))
@@ -578,12 +655,14 @@ def fig_scatter_components(yr0: int, yr1: int) -> go.Figure:
             base["net_mig"].to_list(),
             base["natural_growth"].to_list(),
             base["pop_avg"].to_list(),
+            pct_int,
         )),
         hovertemplate=(
             "<b>%{customdata[0]}</b><br>"
             "Crecimiento natural: %{x:.1f} por mil<br>"
             "Migración neta: %{y:.1f} por mil<br>"
-            "Migración total: %{customdata[1]:,} personas<extra></extra>"
+            "Migración total: %{customdata[1]:,} personas<br>"
+            "% mun. alta intens. EE.UU.: %{customdata[4]:.0f}%<extra></extra>"
         ),
         showlegend=False,
     ))
@@ -598,6 +677,74 @@ def fig_scatter_components(yr0: int, yr1: int) -> go.Figure:
         height=520,
         xaxis=dict(title="Crecimiento natural (por 1,000 hab.)", gridcolor="#334155"),
         yaxis=dict(title="Migración neta (por 1,000 hab.)", gridcolor="#334155"),
+        margin=dict(t=90, b=50, l=10, r=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#CBD5E1",
+    )
+    return fig
+
+
+def fig_doble_expulsion(yr0: int, yr1: int) -> go.Figure:
+    """Scatter: % mun. con alta intensidad migratoria EE.UU. (X) vs tasa migración interna (Y)."""
+    base = (
+        df_mig_state.filter(pl.col("año").is_between(yr0, yr1))
+        .group_by(["CLAVE_ENT", "NOM_ENT"])
+        .agg(pl.col("net_mig").sum(), pl.col("pop_t").mean().alias("pop_avg"))
+        .with_columns((pl.col("net_mig") / pl.col("pop_avg") * 1000).alias("mig_rate"))
+        .join(df_intensidad_state.select(["cve_ent", "pct_alta_intensidad"]),
+              left_on="CLAVE_ENT", right_on="cve_ent", how="left")
+        .with_columns(pl.col("pct_alta_intensidad").fill_null(0))
+    )
+    pop   = base["pop_avg"].to_numpy()
+    sizes = 8 + 28 * (pop**0.5 - pop.min()**0.5) / (pop.max()**0.5 - pop.min()**0.5 + 1)
+
+    def _qcolor(mig: float, intens: float) -> str:
+        if mig < 0 and intens >= 20: return OUT_COLOR
+        if mig >= 0 and intens < 20: return IN_COLOR
+        return "#64748B"
+
+    colors = [_qcolor(r["mig_rate"], r["pct_alta_intensidad"])
+              for r in base.iter_rows(named=True)]
+
+    fig = go.Figure()
+    fig.add_hline(y=0, line=dict(color="#475569", width=1))
+    fig.add_vline(x=20, line=dict(color="#475569", width=1, dash="dot"),
+                  annotation_text="20% umbral", annotation_font_color="#94A3B8",
+                  annotation_position="top right")
+    fig.add_trace(go.Scatter(
+        x=base["pct_alta_intensidad"].to_list(),
+        y=base["mig_rate"].to_list(),
+        mode="markers+text",
+        marker=dict(color=colors, size=sizes.tolist(), opacity=0.85,
+                    line=dict(color="#0F172A", width=1)),
+        text=base["NOM_ENT"].to_list(),
+        textposition="top center",
+        textfont=dict(size=8, color="#94A3B8"),
+        customdata=list(zip(
+            base["NOM_ENT"].to_list(),
+            base["net_mig"].to_list(),
+            base["pct_alta_intensidad"].to_list(),
+        )),
+        hovertemplate=(
+            "<b>%{customdata[0]}</b><br>"
+            "% mun. alta intens. EE.UU.: %{customdata[2]:.0f}%<br>"
+            "Migración neta interna: %{y:.1f} por 1,000<br>"
+            "Migración neta: %{customdata[1]:,} personas<extra></extra>"
+        ),
+        showlegend=False,
+    ))
+    fig.update_layout(
+        title=dict(
+            text=(
+                "<b>¿Los estados con mayor emigración a EE.UU. también pierden población internamente?</b>"
+                "<br><sup style='color:#94A3B8'>X = % municipios con intensidad Alta/Muy alta (CONAPO 2020) · "
+                "Y = tasa migración neta interna por 1,000 · tamaño = población · "
+                "rojo = doble expulsión · azul = doble receptor</sup>"
+            )
+        ),
+        height=520,
+        xaxis=dict(title="% municipios con alta intensidad migratoria EE.UU.", gridcolor="#334155"),
+        yaxis=dict(title="Migración neta interna (por 1,000 hab.)", gridcolor="#334155"),
         margin=dict(t=90, b=50, l=10, r=10),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font_color="#CBD5E1",
@@ -624,41 +771,132 @@ def fig_municipios_ranking(yr0: int, yr1: int, state: str | None, top_n: int) ->
         pl.concat([top_out, top_in])
         .unique(subset=["CLAVE"])
         .sort("net_mig", descending=False)
+        .join(df_intensidad_mun.select(["CLAVE", "grade"]), on="CLAVE", how="left")
+        .with_columns(pl.col("grade").fill_null("sin dato"))
     )
     labels = [f"{r['NOM_MUN']}, {r['NOM_ENT']}" for r in combined.iter_rows(named=True)]
     vals   = combined["net_mig"].to_list()
     pop    = combined["pop_avg"].to_list()
-    colors = [IN_COLOR if v >= 0 else OUT_COLOR for v in vals]
+    grades = combined["grade"].to_list()
+    colors = [_GRADE_COLORS.get(g, "#475569") for g in grades]
 
     fig = go.Figure(go.Bar(
         x=vals, y=labels, orientation="h",
         marker_color=colors,
-        customdata=list(zip(vals, pop)),
+        customdata=list(zip(vals, pop, grades)),
         text=[f"{v:+,.0f}" for v in vals],
         textposition="outside",
         textfont=dict(color="#CBD5E1", size=10),
         hovertemplate=(
             "<b>%{y}</b><br>"
             "Migración neta: %{customdata[0]:+,}<br>"
-            "Población promedio: %{customdata[1]:,.0f}<extra></extra>"
+            "Población promedio: %{customdata[1]:,.0f}<br>"
+            "Intens. migr. EE.UU.: %{customdata[2]}<extra></extra>"
         ),
         cliponaxis=False,
+        showlegend=False,
     ))
+    # Legend proxies — one square per grade present
+    for g in _GRADE_ORDER:
+        if g in grades:
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None], mode="markers",
+                marker=dict(color=_GRADE_COLORS[g], size=10, symbol="square"),
+                name=g.title(), showlegend=True,
+            ))
     n = len(labels)
     fig.update_layout(
         title=dict(
             text=(
                 f"<b>Municipios con mayor entrada y salida de población · {yr0}–{yr1}</b>"
-                "<br><sup style='color:#94A3B8'>estimación indirecta · municipios con datos en las 3 fuentes</sup>"
+                "<br><sup style='color:#94A3B8'>color = intensidad migratoria a EE.UU. (CONAPO 2020) · "
+                "estimación indirecta</sup>"
             )
         ),
         height=max(400, n * 26 + 130),
         xaxis=dict(gridcolor="#334155", zerolinecolor="#64748B"),
         yaxis=dict(categoryorder="array", categoryarray=labels,
                    gridcolor="rgba(0,0,0,0)", automargin=True),
-        margin=dict(t=90, b=50, l=10, r=80),
+        legend=dict(orientation="h", y=-0.08, x=0, font=dict(size=11)),
+        margin=dict(t=90, b=70, l=10, r=80),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font_color="#CBD5E1", showlegend=False,
+        font_color="#CBD5E1",
+    )
+    return fig
+
+
+def fig_grade_crosstab(yr0: int, yr1: int, state: str | None) -> go.Figure:
+    """% municipios expulsores vs receptores por grado de intensidad migratoria EE.UU."""
+    base = df_mig_mun.filter(pl.col("año").is_between(yr0, yr1))
+    if state and state != "__ALL__":
+        base = base.filter(pl.col("NOM_ENT") == state)
+    agg = (
+        base.group_by("CLAVE")
+        .agg(pl.col("net_mig").sum())
+        .join(df_intensidad_mun.select(["CLAVE", "grade"]), on="CLAVE", how="inner")
+        .filter(pl.col("grade") != "nulo")
+        .with_columns((pl.col("net_mig") >= 0).cast(pl.Int8).alias("es_receptor"))
+    )
+    if agg.is_empty():
+        return go.Figure().update_layout(title="Sin datos", **CHART_LAYOUT)
+    crosstab = (
+        agg.group_by("grade")
+        .agg(
+            pl.col("es_receptor").sum().alias("n_receptor"),
+            (1 - pl.col("es_receptor")).sum().alias("n_expulsor"),
+            pl.col("es_receptor").count().alias("n_total"),
+        )
+        .with_columns(
+            (pl.col("n_receptor") / pl.col("n_total") * 100).alias("pct_rec"),
+            (pl.col("n_expulsor") / pl.col("n_total") * 100).alias("pct_exp"),
+        )
+    )
+    grade_present = crosstab["grade"].to_list()
+    ordered = [g for g in _GRADE_ORDER if g in grade_present]
+    crosstab = crosstab.with_columns(
+        pl.col("grade").cast(pl.Enum(ordered)).alias("grade_ord")
+    ).sort("grade_ord")
+
+    fig = go.Figure()
+    for col, label, color in [
+        ("pct_rec", "Receptor interno", IN_COLOR),
+        ("pct_exp", "Expulsor interno", OUT_COLOR),
+    ]:
+        n_col = "n_receptor" if col == "pct_rec" else "n_expulsor"
+        fig.add_trace(go.Bar(
+            x=crosstab[col].to_list(),
+            y=[g.title() for g in crosstab["grade"].to_list()],
+            orientation="h", name=label, marker_color=color,
+            customdata=list(zip(
+                crosstab[n_col].to_list(),
+                crosstab["n_total"].to_list(),
+            )),
+            text=[f"{v:.0f}%" for v in crosstab[col].to_list()],
+            textposition="inside", insidetextanchor="middle",
+            hovertemplate=(
+                f"<b>%{{y}}</b> — {label}<br>"
+                "%{x:.1f}%  (%{customdata[0]:,} municipios)<br>"
+                "Total en grado: %{customdata[1]:,}<extra></extra>"
+            ),
+        ))
+    y_order = [g.title() for g in reversed([g for g in _GRADE_ORDER if g in grade_present and g != "nulo"])]
+    fig.update_layout(
+        barmode="stack",
+        title=dict(
+            text=(
+                "<b>¿Los municipios con mayor emigración a EE.UU. también pierden población internamente?</b>"
+                "<br><sup style='color:#94A3B8'>% de municipios por grado de intensidad migratoria · "
+                "CONAPO 2020 · excluye grado Nulo</sup>"
+            )
+        ),
+        xaxis=dict(range=[0, 100], visible=False),
+        yaxis=dict(categoryorder="array", categoryarray=y_order,
+                   gridcolor="rgba(0,0,0,0)"),
+        height=300,
+        legend=dict(orientation="h", y=-0.18, x=0),
+        margin=dict(t=80, b=60, l=10, r=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#CBD5E1",
     )
     return fig
 
@@ -1549,6 +1787,7 @@ def _build_panel_annual(yr0: int, yr1: int) -> pl.DataFrame:
         .with_columns(pl.col("año").cast(pl.Int64))
     )
     coneval = df_coneval_annual.with_columns(pl.col("ent").cast(pl.Int64))
+    bnx = df_banxico_annual.filter(pl.col("año").is_between(yr0, yr1))
 
     return (
         mig
@@ -1558,6 +1797,7 @@ def _build_panel_annual(yr0: int, yr1: int) -> pl.DataFrame:
         .join(des, on=["NOM_ENT", "año"], how="left")
         .join(envipe, on=["CLAVE_ENT", "año"], how="left")
         .join(coneval, left_on=["CLAVE_ENT", "año"], right_on=["ent", "año"], how="left")
+        .join(bnx, on=["NOM_ENT", "año"], how="left")
         .with_columns(
             pl.col("sek").fill_null(0),
             pl.col("hom").fill_null(0),
@@ -1567,6 +1807,7 @@ def _build_panel_annual(yr0: int, yr1: int) -> pl.DataFrame:
             (pl.col("sek") / pl.col("pop_t") * 100_000).alias("sek_rate"),
             (pl.col("hom") / pl.col("pop_t") * 100_000).alias("hom_rate"),
             (pl.col("desaparecidos") / pl.col("pop_t") * 100_000).alias("des_rate"),
+            (pl.col("remesas_mmusd") * 1_000_000 / pl.col("pop_t")).alias("remesas_percap_usd"),
         )
     )
 
@@ -1610,6 +1851,7 @@ def fig_rolling_r(yr0: int, yr1: int) -> go.Figure:
         "Línea pobreza ingresos":    {"col": "plp",            "color": "#A78BFA", "dash": "solid"},
         "Tasa denuncia ENVIPE":      {"col": "rep_rate_envipe","color": "#FCD34D", "dash": "solid"},
         "Confianza institucional":   {"col": "trust_inst_envipe","color": "#34D399","dash": "solid"},
+        "Remesas por hab. (Banxico)":{"col": "remesas_percap_usd","color": "#EC4899","dash": "solid"},
     }
 
     xs: dict[str, list] = {k: [] for k in series}
@@ -1712,6 +1954,7 @@ def fig_lag_heatmap(yr0: int, yr1: int) -> go.Figure:
         ("Línea ingreso",        "plp"),
         ("Tasa denuncia",        "rep_rate_envipe"),
         ("Confianza inst.",      "trust_inst_envipe"),
+        ("Remesas/hab.",         "remesas_percap_usd"),
     ]
     lags = [
         ("Predictor → Migración (lag +1)", +1),  # predictor t predicts mig t+1
@@ -1802,6 +2045,7 @@ def fig_scatter_small_multiples(yr0: int, yr1: int, predictor: str) -> go.Figure
         "plp":              ("plp",                "Línea pobreza ingresos CONEVAL (%)"),
         "rep_rate_envipe":  ("rep_rate_envipe",    "Tasa denuncia ENVIPE (%)"),
         "trust_inst_envipe":("trust_inst_envipe",  "Confianza institucional ENVIPE [0–1]"),
+        "remesas":          ("remesas_percap_usd", "Remesas por hab. Banxico (USD)"),
     }
     pred_col, pred_label = _pred_map.get(predictor, ("sek_rate", "Secuestro"))
 
@@ -1992,6 +2236,7 @@ app.layout = dbc.Container([
         dbc.Tab(label="Componentes", tab_id="tab-components", children=[
             dbc.Row([dbc.Col(dcc.Graph(id="g-decomposition"), md=12)], className="mb-3 mt-3"),
             dbc.Row([dbc.Col(dcc.Graph(id="g-scatter"), md=12)], className="mb-3"),
+            dbc.Row([dbc.Col(dcc.Graph(id="g-doble-expulsion"), md=12)], className="mb-3"),
         ],
             label_style={"color": "#94A3B8"},
             active_label_style={"color": "#F8FAFC", "fontWeight": "600", "borderTop": "2px solid #2E86AB"},
@@ -2032,6 +2277,7 @@ app.layout = dbc.Container([
                 ], style={"color": "#64748B", "fontSize": "0.78rem", "marginBottom": "8px"}), md=12),
             ]),
             dbc.Row([dbc.Col(dcc.Graph(id="g-mun-ranking"), md=12)]),
+            dbc.Row([dbc.Col(dcc.Graph(id="g-grade-crosstab"), md=12)], className="mb-3"),
         ],
             label_style={"color": "#94A3B8"},
             active_label_style={"color": "#F8FAFC", "fontWeight": "600", "borderTop": "2px solid #2E86AB"},
@@ -2140,6 +2386,7 @@ app.layout = dbc.Container([
                             {"label": " Línea pobreza ingresos (CONEVAL)", "value": "plp"},
                             {"label": " Tasa denuncia ENVIPE",             "value": "rep_rate_envipe"},
                             {"label": " Confianza institucional ENVIPE",   "value": "trust_inst_envipe"},
+                            {"label": " Remesas Banxico",                  "value": "remesas"},
                         ],
                         value="sek",
                         inline=True,
@@ -2154,9 +2401,12 @@ app.layout = dbc.Container([
                     html.B("Datos que fortalecerían estos hallazgos: ", style={"color": "#2E86AB"}),
                     html.Ul([
                         html.Li([
-                            html.B("Remesas Banxico por estado (API pública, 2003–presente): "),
-                            "señal directa de migración internacional — separaría flujos internos de los internacionales "
-                            "que hoy el residual demográfico mezcla."
+                            html.B("✓ Remesas Banxico 2003–2026 integradas: ",
+                                   style={"color": "#3BB273"}),
+                            "ingresos por remesas familiares por estado (Banco de México, CA79), normalizados "
+                            "por habitante (USD/persona/año). Disponibles como predictor en correlaciones, "
+                            "heatmap de lags y small multiples. "
+                            "Separa la señal económica de los flujos internacionales del residual demográfico.",
                         ]),
                         html.Li([
                             html.B("✓ ENVIPE 2017–2025 integrada: ",
@@ -2226,24 +2476,26 @@ def update_state_lines(states, year_range):
 
 
 @app.callback(
-    Output("g-decomposition", "figure"),
-    Output("g-scatter",       "figure"),
+    Output("g-decomposition",   "figure"),
+    Output("g-scatter",         "figure"),
+    Output("g-doble-expulsion", "figure"),
     Input("year-range", "value"),
 )
 def update_components(year_range):
     yr0, yr1 = year_range
-    return fig_decomposition(yr0, yr1), fig_scatter_components(yr0, yr1)
+    return fig_decomposition(yr0, yr1), fig_scatter_components(yr0, yr1), fig_doble_expulsion(yr0, yr1)
 
 
 @app.callback(
-    Output("g-mun-ranking", "figure"),
+    Output("g-mun-ranking",    "figure"),
+    Output("g-grade-crosstab", "figure"),
     Input("year-range", "value"),
     Input("mun-state",  "value"),
     Input("mun-topn",   "value"),
 )
 def update_municipios(year_range, state, top_n):
     yr0, yr1 = year_range
-    return fig_municipios_ranking(yr0, yr1, state, int(top_n))
+    return fig_municipios_ranking(yr0, yr1, state, int(top_n)), fig_grade_crosstab(yr0, yr1, state)
 
 
 @app.callback(
