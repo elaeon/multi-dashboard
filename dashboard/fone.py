@@ -31,9 +31,6 @@ _LOG_RANGE = _LOG_MAX - _LOG_MIN
 _EDGES     = [_pmin * (_pmax / _pmin) ** (i / _N_BINS) for i in range(_N_BINS + 1)]
 _MIDPOINTS = [math.sqrt(_EDGES[i] * _EDGES[i + 1]) for i in range(_N_BINS)]
 
-_THRESHOLDS  = [100_000, 250_000, 500_000, 750_000, 1_000_000]
-_BAND_LABELS = ["< 100k", "100k–250k", "250k–500k", "500k–750k", "750k–1M", "≥ 1M"]
-_BAND_COLORS = ["#4E9AF1", "#4ECDC4", "#95E06C", "#F7B731", "#FF6B35", "#E84855"]
 
 
 def _approx_quantile(counts: list[int], p: float) -> float:
@@ -101,13 +98,34 @@ _df_curp_totals = (
 )
 
 
+# National heptile cutoffs (P1/7 … P6/7) from all per-CURP annual totals
+_vals_all = _df_curp_totals["PERCEPCIONES_TRIMESTRALES"]
+_Q = [float(_vals_all.quantile(i / 7)) for i in range(1, 7)]
+
+
+def _fmt_mxn(x: float) -> str:
+    return f"{x/1_000_000:.1f}M" if x >= 1_000_000 else f"{x/1_000:.0f}k"
+
+
+_BAND_LABELS = [
+    f"H1 · < {_fmt_mxn(_Q[0])}",
+    f"H2 · {_fmt_mxn(_Q[0])}–{_fmt_mxn(_Q[1])}",
+    f"H3 · {_fmt_mxn(_Q[1])}–{_fmt_mxn(_Q[2])}",
+    f"H4 · {_fmt_mxn(_Q[2])}–{_fmt_mxn(_Q[3])}",
+    f"H5 · {_fmt_mxn(_Q[3])}–{_fmt_mxn(_Q[4])}",
+    f"H6 · {_fmt_mxn(_Q[4])}–{_fmt_mxn(_Q[5])}",
+    f"H7 · ≥ {_fmt_mxn(_Q[5])}",
+]
+_BAND_COLORS = ["#4E9AF1", "#45B7D1", "#4ECDC4", "#95E06C", "#F7B731", "#FF6B35", "#E84855"]
+
 _BAND_EXPR = (
-    pl.when(pl.col("PERCEPCIONES_TRIMESTRALES") < _THRESHOLDS[0]).then(pl.lit(0))
-    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _THRESHOLDS[1]).then(pl.lit(1))
-    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _THRESHOLDS[2]).then(pl.lit(2))
-    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _THRESHOLDS[3]).then(pl.lit(3))
-    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _THRESHOLDS[4]).then(pl.lit(4))
-    .otherwise(pl.lit(5))
+    pl.when(pl.col("PERCEPCIONES_TRIMESTRALES") < _Q[0]).then(pl.lit(0))
+    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _Q[1]).then(pl.lit(1))
+    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _Q[2]).then(pl.lit(2))
+    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _Q[3]).then(pl.lit(3))
+    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _Q[4]).then(pl.lit(4))
+    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _Q[5]).then(pl.lit(5))
+    .otherwise(pl.lit(6))
     .alias("band")
 )
 
@@ -166,12 +184,12 @@ def fig_million_split(d_bands: pl.DataFrame, d_bins: pl.DataFrame) -> go.Figure:
         .agg(pl.col("band"), pl.col("count"))
         .iter_rows(named=True)
     ):
-        counts = [0] * 6
+        counts = [0] * 7
         for b, c in zip(row["band"], row["count"]):
             counts[b] = c
         state_counts[row["ENTIDAD_FEDERATIVA"]] = counts
 
-    # sort by Gini descending (most unequal at top)
+    # sort by Gini descending (most unequal at top → Q5-heavy states at bottom)
     states = sorted(state_counts, key=lambda s: state_gini.get(s, 0), reverse=True)
     totals = [sum(state_counts[s]) or 1 for s in states]
 
@@ -191,10 +209,55 @@ def fig_million_split(d_bands: pl.DataFrame, d_bins: pl.DataFrame) -> go.Figure:
     fig.update_layout(
         **_DARK, barmode="stack", height=600,
         margin=dict(t=50, b=30, l=10, r=20),
-        title=dict(text="Distribución salarial por bandas · ordenado por Gini", font=dict(size=13, color="#94A3B8"), x=0),
+        title=dict(text="Distribución salarial · heptiles nacionales · ordenado por Gini", font=dict(size=13, color="#94A3B8"), x=0),
         xaxis=dict(**_XAXIS, title="%", range=[0, 100], ticksuffix="%"),
         yaxis=dict(**_YAXIS),
         legend=dict(orientation="h", y=1.06, x=0, font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
+    )
+    return fig
+
+
+_PCTILE_OPTS = {
+    "p50": (0.50, "Top 50% · mediana",    "mediana"),
+    "p90": (0.90, "Top 10% · umbral P90", "P90"),
+    "p95": (0.95, "Top 5%  · umbral P95", "P95"),
+    "p99": (0.99, "Top 1%  · umbral P99", "P99"),
+}
+
+
+def fig_percentile_bar(d_totals: pl.DataFrame, pctile_key: str) -> go.Figure:
+    q, title_long, label = _PCTILE_OPTS[pctile_key]
+    df = (
+        d_totals
+        .group_by("ENTIDAD_FEDERATIVA")
+        .agg(pl.col("PERCEPCIONES_TRIMESTRALES").quantile(q).alias("val"))
+        .sort("val", descending=True)
+    )
+    states = df["ENTIDAD_FEDERATIVA"].to_list()
+    vals   = df["val"].to_list()
+
+    v_min, v_max = vals[-1], vals[0]
+    span = (v_max - v_min) or 1
+
+    colors = []
+    for v in vals:
+        t = (v - v_min) / span
+        r  = int(0x2E + t * (0xE8 - 0x2E))
+        gv = int(0x86 + t * (0x48 - 0x86))
+        b  = int(0xAB + t * (0x55 - 0xAB))
+        colors.append(f"rgb({r},{gv},{b})")
+
+    fig = go.Figure(go.Bar(
+        x=vals, y=states, orientation="h",
+        marker_color=colors, marker_line_width=0,
+        hovertemplate=f"<b>%{{y}}</b><br>{label} = %{{x:,.0f}} MXN<extra></extra>",
+    ))
+    fig.update_layout(
+        **_DARK, height=600,
+        margin=dict(t=50, b=30, l=10, r=20),
+        title=dict(text=f"Umbral por estado · {title_long}", font=dict(size=13, color="#94A3B8"), x=0),
+        xaxis=dict(**_XAXIS, title="MXN", tickformat=",.0f"),
+        yaxis=dict(**_YAXIS),
     )
     return fig
 
@@ -249,7 +312,6 @@ def fig_hist_state(year: int, tipo: str, state: str, range_opt: str) -> go.Figur
         running += c
         cum_pct.append(running / total * 100)
 
-    # Gini from binned data (trapezoidal Lorenz)
     total_inc = sum(m * c for m, c in zip(midpoints, counts))
     gini = 0.0
     if total > 0 and total_inc > 0:
@@ -299,6 +361,51 @@ def fig_hist_state(year: int, tipo: str, state: str, range_opt: str) -> go.Figur
         ),
         xaxis=dict(**_XAXIS, title="MXN", tickformat=",.0f"),
         yaxis={**_YAXIS, "title": "Registros", "gridcolor": "#334155", "showgrid": True},
+    )
+    return fig
+
+
+def fig_pctile_scatter(d_totals: pl.DataFrame) -> go.Figure:
+    state_stats = (
+        d_totals
+        .group_by("ENTIDAD_FEDERATIVA")
+        .agg([
+            pl.len().alias("total"),
+            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.50).alias("p50"),
+            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.90).alias("p90"),
+            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.95).alias("p95"),
+            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.99).alias("p99"),
+        ])
+    )
+
+    states = state_stats["ENTIDAD_FEDERATIVA"].to_list()
+    totals = state_stats["total"].to_list()
+
+    pctile_defs = [
+        ("P50", "p50", 0.50, "#4E9AF1"),
+        ("P90", "p90", 0.10, "#F7B731"),
+        ("P95", "p95", 0.05, "#FF6B35"),
+        ("P99", "p99", 0.01, "#E84855"),
+    ]
+
+    fig = go.Figure()
+    for label, col, frac_above, color in pctile_defs:
+        xs = state_stats[col].to_list()
+        ys = [int(t * frac_above) for t in totals]
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, mode="markers", name=label,
+            text=states,
+            marker=dict(color=color, size=9, opacity=0.85, line=dict(width=0)),
+            hovertemplate=f"<b>%{{text}}</b><br>{label} = %{{x:,.0f}} MXN<br>Trabajadores ≥ {label}: %{{y:,}}<extra></extra>",
+        ))
+
+    fig.update_layout(
+        **_DARK, height=550,
+        margin=dict(t=50, b=40, l=10, r=20),
+        title=dict(text="Percentiles salariales por estado · P50 / P90 / P95 / P99", font=dict(size=13, color="#94A3B8"), x=0),
+        xaxis=dict(**_XAXIS, title="MXN", tickformat=",.0f"),
+        yaxis={**_YAXIS, "title": "Trabajadores", "showgrid": True, "gridcolor": "#334155"},
+        legend=dict(orientation="h", y=1.06, x=0, font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
     )
     return fig
 
@@ -389,6 +496,41 @@ app.layout = html.Div(
                         ]),
                     ],
                 ),
+                dcc.Tab(
+                    label="Percentiles por estado", value="tab-scatter",
+                    style=_TAB_STYLE, selected_style=_TAB_SEL_STYLE,
+                    children=[
+                        dbc.Row([
+                            dbc.Col(html.Div(dcc.Graph(id="chart-scatter"), style=CARD_STYLE), md=12),
+                        ], className="mt-3"),
+                    ],
+                ),
+                dcc.Tab(
+                    label="Umbral por estado", value="tab-umbral",
+                    style=_TAB_STYLE, selected_style=_TAB_SEL_STYLE,
+                    children=[
+                        dbc.Row([
+                            dbc.Col([
+                                html.Label("Percentil", style={"color": "#94A3B8", "fontSize": "12px"}),
+                                dcc.RadioItems(
+                                    id="rd-pctile",
+                                    options=[
+                                        {"label": " Top 50% (mediana)", "value": "p50"},
+                                        {"label": " Top 10% (P90)",     "value": "p90"},
+                                        {"label": " Top 5%  (P95)",     "value": "p95"},
+                                        {"label": " Top 1%  (P99)",     "value": "p99"},
+                                    ],
+                                    value="p90", inline=True,
+                                    style={"color": "#CBD5E1", "fontSize": "13px", "marginTop": "6px"},
+                                    inputStyle={"marginRight": "4px", "marginLeft": "12px"},
+                                ),
+                            ], md=12),
+                        ], className="mt-3 mb-3"),
+                        dbc.Row([
+                            dbc.Col(html.Div(dcc.Graph(id="chart-umbral"), style=CARD_STYLE), md=12),
+                        ]),
+                    ],
+                ),
             ],
         ),
 
@@ -401,6 +543,19 @@ app.layout = html.Div(
 )
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("chart-umbral", "figure"),
+    Input("dd-year",   "value"),
+    Input("dd-tipo",   "value"),
+    Input("rd-pctile", "value"),
+)
+def update_umbral(year: int, tipo: str, pctile_key: str):
+    d = _df_curp_totals.filter(pl.col("YEAR").cast(pl.Int32) == int(year))
+    if tipo != "Todos":
+        d = d.filter(pl.col("TIPO_PLAZA") == tipo)
+    return fig_percentile_bar(d, pctile_key)
+
 
 @app.callback(
     Output("chart-million", "figure"),
@@ -423,6 +578,18 @@ def update_million(year: int, tipo: str):
 )
 def update_hist_state(year: int, tipo: str, state: str, range_opt: str):
     return fig_hist_state(int(year), tipo, state, range_opt)
+
+
+@app.callback(
+    Output("chart-scatter", "figure"),
+    Input("dd-year", "value"),
+    Input("dd-tipo", "value"),
+)
+def update_scatter(year: int, tipo: str):
+    d = _df_curp_totals.filter(pl.col("YEAR").cast(pl.Int32) == int(year))
+    if tipo != "Todos":
+        d = d.filter(pl.col("TIPO_PLAZA") == tipo)
+    return fig_pctile_scatter(d)
 
 
 if __name__ == "__main__":
