@@ -33,34 +33,6 @@ _MIDPOINTS = [math.sqrt(_EDGES[i] * _EDGES[i + 1]) for i in range(_N_BINS)]
 
 
 
-def _approx_quantile(counts: list[int], p: float) -> float:
-    total = sum(counts)
-    target = total * p
-    cumsum = 0
-    for i, c in enumerate(counts):
-        cumsum += c
-        if cumsum >= target:
-            return _MIDPOINTS[i]
-    return _MIDPOINTS[-1]
-
-
-def _gini(counts: list[int]) -> float:
-    total_n = sum(counts)
-    total_inc = sum(m * c for m, c in zip(_MIDPOINTS, counts))
-    if total_n == 0 or total_inc == 0:
-        return 0.0
-    cum_n, cum_inc, area = 0, 0.0, 0.0
-    prev_f, prev_l = 0.0, 0.0
-    for c, m in zip(counts, _MIDPOINTS):
-        cum_n += c
-        cum_inc += m * c
-        f = cum_n / total_n
-        l = cum_inc / total_inc
-        area += (prev_l + l) / 2 * (f - prev_f)  # trapezoidal rule
-        prev_f, prev_l = f, l
-    return 1 - 2 * area
-
-
 def _bin_lf(lf: pl.LazyFrame, keys: list) -> pl.LazyFrame:
     """Sum PERCEPCIONES per CURP, assign log-spaced bin index, count per keys×bin."""
     return (
@@ -79,74 +51,15 @@ def _bin_lf(lf: pl.LazyFrame, keys: list) -> pl.LazyFrame:
 
 _lf = pl.scan_parquet(_paths)
 
-# Binned frames — used by Gini chart
-_df_raw   = _bin_lf(_lf, ["ENTIDAD_FEDERATIVA", "YEAR", "TIPO_PLAZA"]).collect(engine="streaming")
-_df_todos = _bin_lf(_lf, ["ENTIDAD_FEDERATIVA", "YEAR"]).collect(engine="streaming")
+_df_raw = _bin_lf(_lf, ["ENTIDAD_FEDERATIVA", "YEAR", "TIPO_PLAZA"]).collect(engine="streaming")
 
-_FRAMES = {
-    "Todos": _df_todos,
-    "PLAZA": _df_raw.filter(pl.col("TIPO_PLAZA") == "PLAZA"),
-    "HORA":  _df_raw.filter(pl.col("TIPO_PLAZA") == "HORA"),
-}
-
-# Per-CURP annual totals — base for all threshold frames
+# Per-CURP annual totals — base for percentile charts
 _df_curp_totals = (
     _lf.group_by(["CURP", "ENTIDAD_FEDERATIVA", "YEAR", "TIPO_PLAZA"])
     .agg(pl.col("PERCEPCIONES_TRIMESTRALES").sum())
     .filter(pl.col("PERCEPCIONES_TRIMESTRALES") > 0)
     .collect(engine="streaming")
 )
-
-
-# National heptile cutoffs (P1/7 … P6/7) from all per-CURP annual totals
-_vals_all = _df_curp_totals["PERCEPCIONES_TRIMESTRALES"]
-_Q = [float(_vals_all.quantile(i / 7)) for i in range(1, 7)]
-
-
-def _fmt_mxn(x: float) -> str:
-    return f"{x/1_000_000:.1f}M" if x >= 1_000_000 else f"{x/1_000:.0f}k"
-
-
-_BAND_LABELS = [
-    f"H1 · < {_fmt_mxn(_Q[0])}",
-    f"H2 · {_fmt_mxn(_Q[0])}–{_fmt_mxn(_Q[1])}",
-    f"H3 · {_fmt_mxn(_Q[1])}–{_fmt_mxn(_Q[2])}",
-    f"H4 · {_fmt_mxn(_Q[2])}–{_fmt_mxn(_Q[3])}",
-    f"H5 · {_fmt_mxn(_Q[3])}–{_fmt_mxn(_Q[4])}",
-    f"H6 · {_fmt_mxn(_Q[4])}–{_fmt_mxn(_Q[5])}",
-    f"H7 · ≥ {_fmt_mxn(_Q[5])}",
-]
-_BAND_COLORS = ["#4E9AF1", "#45B7D1", "#4ECDC4", "#95E06C", "#F7B731", "#FF6B35", "#E84855"]
-
-_BAND_EXPR = (
-    pl.when(pl.col("PERCEPCIONES_TRIMESTRALES") < _Q[0]).then(pl.lit(0))
-    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _Q[1]).then(pl.lit(1))
-    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _Q[2]).then(pl.lit(2))
-    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _Q[3]).then(pl.lit(3))
-    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _Q[4]).then(pl.lit(4))
-    .when(pl.col("PERCEPCIONES_TRIMESTRALES") < _Q[5]).then(pl.lit(5))
-    .otherwise(pl.lit(6))
-    .alias("band")
-)
-
-_df_raw_bands   = (
-    _df_curp_totals
-    .with_columns(_BAND_EXPR)
-    .group_by(["ENTIDAD_FEDERATIVA", "YEAR", "TIPO_PLAZA", "band"])
-    .agg(pl.len().alias("count"))
-)
-_df_todos_bands = (
-    _df_curp_totals
-    .with_columns(_BAND_EXPR)
-    .group_by(["ENTIDAD_FEDERATIVA", "YEAR", "band"])
-    .agg(pl.len().alias("count"))
-)
-
-_FRAMES_BANDS = {
-    "Todos": _df_todos_bands,
-    "PLAZA": _df_raw_bands.filter(pl.col("TIPO_PLAZA") == "PLAZA"),
-    "HORA":  _df_raw_bands.filter(pl.col("TIPO_PLAZA") == "HORA"),
-}
 
 YEARS  = sorted(_df_raw["YEAR"].cast(pl.Int32).unique().to_list())
 TIPOS  = ["Todos"] + sorted(_df_raw["TIPO_PLAZA"].unique().to_list())
@@ -164,58 +77,6 @@ _XAXIS = dict(tickfont=dict(size=9, color="#94A3B8"), gridcolor="#334155", showg
 _YAXIS = dict(tickfont=dict(size=9, color="#CBD5E1"), showgrid=False)
 
 # ── Figure factories ──────────────────────────────────────────────────────────
-
-def fig_million_split(d_bands: pl.DataFrame, d_bins: pl.DataFrame) -> go.Figure:
-    # Gini per state from binned data (for sorting)
-    state_gini: dict[str, float] = {}
-    for row in (
-        d_bins.group_by("ENTIDAD_FEDERATIVA")
-        .agg(pl.col("bin_idx"), pl.col("count"))
-        .iter_rows(named=True)
-    ):
-        counts = [0] * _N_BINS
-        for idx, c in zip(row["bin_idx"], row["count"]):
-            counts[idx] = c
-        state_gini[row["ENTIDAD_FEDERATIVA"]] = _gini(counts)
-
-    state_counts: dict[str, list[int]] = {}
-    for row in (
-        d_bands.group_by("ENTIDAD_FEDERATIVA")
-        .agg(pl.col("band"), pl.col("count"))
-        .iter_rows(named=True)
-    ):
-        counts = [0] * 7
-        for b, c in zip(row["band"], row["count"]):
-            counts[b] = c
-        state_counts[row["ENTIDAD_FEDERATIVA"]] = counts
-
-    # sort by Gini descending (most unequal at top → Q5-heavy states at bottom)
-    states = sorted(state_counts, key=lambda s: state_gini.get(s, 0), reverse=True)
-    totals = [sum(state_counts[s]) or 1 for s in states]
-
-    ginis = [state_gini.get(s, 0) for s in states]
-
-    fig = go.Figure()
-    for band_idx, (label, color) in enumerate(zip(_BAND_LABELS, _BAND_COLORS)):
-        ns   = [state_counts[s][band_idx] for s in states]
-        pcts = [n / t * 100 for n, t in zip(ns, totals)]
-        fig.add_trace(go.Bar(
-            x=pcts, y=states, orientation="h", name=label,
-            marker_color=color, marker_line_width=0,
-            customdata=list(zip(ns, ginis)),
-            hovertemplate=f"<b>%{{y}}</b><br>{label} MXN<br>n=%{{customdata[0]:,}}<br>%{{x:.1f}}%<br>Gini=%{{customdata[1]:.3f}}<extra></extra>",
-        ))
-
-    fig.update_layout(
-        **_DARK, barmode="stack", height=600,
-        margin=dict(t=50, b=30, l=10, r=20),
-        title=dict(text="Distribución salarial · heptiles nacionales · ordenado por Gini", font=dict(size=13, color="#94A3B8"), x=0),
-        xaxis=dict(**_XAXIS, title="%", range=[0, 100], ticksuffix="%"),
-        yaxis=dict(**_YAXIS),
-        legend=dict(orientation="h", y=1.06, x=0, font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
-    )
-    return fig
-
 
 _PCTILE_OPTS = {
     "p50": (0.50, "Top 50% · mediana",    "mediana"),
@@ -410,6 +271,63 @@ def fig_pctile_scatter(d_totals: pl.DataFrame) -> go.Figure:
     return fig
 
 
+_PCTILE_COLORS = {"P50": "#4E9AF1", "P90": "#F7B731", "P95": "#FF6B35", "P99": "#E84855"}
+_DASH_CYCLE    = ["solid", "dash", "dot", "dashdot", "longdash"]
+
+
+def fig_progress_lines(tipo: str, selected_states: list[str], pctiles: list[str]) -> go.Figure:
+    if not selected_states or not pctiles:
+        fig = go.Figure()
+        fig.update_layout(**_DARK, height=500, margin=dict(t=50, b=40, l=10, r=20),
+                          title=dict(text="Selecciona al menos un estado", font=dict(size=13, color="#94A3B8"), x=0))
+        return fig
+
+    d = _df_curp_totals
+    if tipo != "Todos":
+        d = d.filter(pl.col("TIPO_PLAZA") == tipo)
+
+    df = (
+        d.filter(pl.col("ENTIDAD_FEDERATIVA").is_in(selected_states))
+        .group_by(["ENTIDAD_FEDERATIVA", "YEAR"])
+        .agg([
+            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.50).alias("P50"),
+            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.90).alias("P90"),
+            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.95).alias("P95"),
+            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.99).alias("P99"),
+        ])
+        .sort(["ENTIDAD_FEDERATIVA", "YEAR"])
+    )
+
+    all_years = sorted(df["YEAR"].unique().to_list())
+    fig = go.Figure()
+
+    for si, state in enumerate(selected_states):
+        dash = _DASH_CYCLE[si % len(_DASH_CYCLE)]
+        d_s  = df.filter(pl.col("ENTIDAD_FEDERATIVA") == state).sort("YEAR")
+        years = d_s["YEAR"].to_list()
+        for pct, color in _PCTILE_COLORS.items():
+            if pct not in pctiles:
+                continue
+            vals = d_s[pct].to_list()
+            fig.add_trace(go.Scatter(
+                x=years, y=vals, mode="lines+markers",
+                name=f"{state} · {pct}",
+                line=dict(color=color, dash=dash, width=2),
+                marker=dict(size=6),
+                hovertemplate=f"<b>{state} · {pct}</b><br>Año: %{{x}}<br>%{{y:,.0f}} MXN<extra></extra>",
+            ))
+
+    fig.update_layout(
+        **_DARK, height=520,
+        margin=dict(t=50, b=40, l=10, r=20),
+        title=dict(text="Evolución de percentiles salariales por estado", font=dict(size=13, color="#94A3B8"), x=0),
+        xaxis=dict(**_XAXIS, title="Año", tickmode="array", tickvals=all_years, dtick=1),
+        yaxis={**_YAXIS, "title": "MXN", "tickformat": ",.0f", "showgrid": True, "gridcolor": "#334155"},
+        legend=dict(font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
+    )
+    return fig
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 app = Dash(__name__, external_stylesheets=[dbc.themes.SLATE])
@@ -456,8 +374,35 @@ app.layout = html.Div(
                     style=_TAB_STYLE, selected_style=_TAB_SEL_STYLE,
                     children=[
                         dbc.Row([
-                            dbc.Col(html.Div(dcc.Graph(id="chart-million"), style=CARD_STYLE), md=12),
-                        ], className="mt-3"),
+                            dbc.Col([
+                                html.Label("Estados", style={"color": "#94A3B8", "fontSize": "12px"}),
+                                dcc.Dropdown(
+                                    id="dd-states",
+                                    options=[{"label": s, "value": s} for s in STATES],
+                                    value=STATES[:3], multi=True, clearable=False,
+                                    style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                                ),
+                            ], md=7),
+                            dbc.Col([
+                                html.Label("Percentiles", style={"color": "#94A3B8", "fontSize": "12px"}),
+                                dcc.Checklist(
+                                    id="ck-pctiles",
+                                    options=[
+                                        {"label": " P50", "value": "P50"},
+                                        {"label": " P90", "value": "P90"},
+                                        {"label": " P95", "value": "P95"},
+                                        {"label": " P99", "value": "P99"},
+                                    ],
+                                    value=["P50", "P90", "P95", "P99"],
+                                    inline=True,
+                                    style={"color": "#CBD5E1", "fontSize": "13px", "marginTop": "6px"},
+                                    inputStyle={"marginRight": "4px", "marginLeft": "12px"},
+                                ),
+                            ], md=5),
+                        ], className="mt-3 mb-3"),
+                        dbc.Row([
+                            dbc.Col(html.Div(dcc.Graph(id="chart-progress"), style=CARD_STYLE), md=12),
+                        ]),
                     ],
                 ),
                 dcc.Tab(
@@ -558,15 +503,13 @@ def update_umbral(year: int, tipo: str, pctile_key: str):
 
 
 @app.callback(
-    Output("chart-million", "figure"),
-    Input("dd-year", "value"),
-    Input("dd-tipo", "value"),
+    Output("chart-progress", "figure"),
+    Input("dd-tipo",   "value"),
+    Input("dd-states", "value"),
+    Input("ck-pctiles", "value"),
 )
-def update_million(year: int, tipo: str):
-    yr = int(year)
-    d_bands = _FRAMES_BANDS[tipo].filter(pl.col("YEAR").cast(pl.Int32) == yr)
-    d_bins  = _FRAMES[tipo].filter(pl.col("YEAR").cast(pl.Int32) == yr)
-    return fig_million_split(d_bands, d_bins)
+def update_progress(tipo: str, selected_states: list, pctiles: list):
+    return fig_progress_lines(tipo, selected_states or [], pctiles or [])
 
 
 @app.callback(
