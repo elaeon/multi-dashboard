@@ -79,6 +79,8 @@ def main() -> None:
     if curp_totals.is_empty():
         sys.exit(f"Sin datos para {label}")
 
+    abs_total = float(curp_totals["PERCEPCIONES_ANUALES"].sum())
+
     # Apply percentile filter if requested
     if args.percentil is not None:
         threshold = float(curp_totals["PERCEPCIONES_ANUALES"].quantile(_PCTILE_MAP[args.percentil]))
@@ -100,7 +102,8 @@ def main() -> None:
         )
         n_curps = int(result["N_CURPS"].sum())
         total_perc = float(result["PERCEPCIONES_ANUALES_TOTAL"].sum())
-        print(f"# {pctile_label}{n_curps:,} CURPs | {total_perc:,.2f} MXN total | {label}", file=sys.stderr)
+        pct_of_total = f" ({total_perc / abs_total * 100:.1f}% del total)" if args.percentil is not None else ""
+        print(f"# {pctile_label}{n_curps:,} CURPs | {total_perc:,.2f} MXN total{pct_of_total} | {label}", file=sys.stderr)
     else:
         result = (
             curp_totals
