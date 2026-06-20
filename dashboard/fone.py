@@ -1,4 +1,5 @@
 import glob
+import json
 import math
 import polars as pl
 import plotly.graph_objects as go
@@ -64,6 +65,9 @@ _df_curp_totals = (
 YEARS  = sorted(_df_raw["YEAR"].cast(pl.Int32).unique().to_list())
 TIPOS  = ["Todos"] + sorted(_df_raw["TIPO_PLAZA"].unique().to_list())
 STATES = sorted(_df_raw["ENTIDAD_FEDERATIVA"].unique().to_list())
+
+with open("data/mexico_states.geojson") as _f:
+    _MEXICO_GEOJSON = json.load(_f)
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
 
@@ -274,6 +278,10 @@ def fig_pctile_scatter(d_totals: pl.DataFrame) -> go.Figure:
 _BOX_YEAR_COLORS = {2024: "#4E9AF1", 2025: "#F7B731", 2026: "#3BB273"}
 _PCTILE_COLORS   = {"P50": "#4E9AF1", "P90": "#F7B731", "P95": "#FF6B35", "P99": "#E84855"}
 _DASH_CYCLE      = ["solid", "dash", "dot", "dashdot", "longdash"]
+_GINI_LINE_COLORS = [
+    "#4E9AF1", "#F7B731", "#3BB273", "#E84855", "#A78BFA",
+    "#F97316", "#06B6D4", "#EC4899", "#84CC16", "#F59E0B",
+]
 
 
 def fig_progress_lines(tipo: str, selected_states: list[str], pctiles: list[str], year_range: list[int]) -> go.Figure:
@@ -368,6 +376,138 @@ def fig_box_pctiles(d_totals: pl.DataFrame, selected_states: list[str]) -> go.Fi
         yaxis={**_YAXIS, "title": "MXN", "tickformat": ",.0f",
                "showgrid": True, "gridcolor": "#334155"},
         legend=dict(title="Año", orientation="v", font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
+    )
+    return fig
+
+
+def fig_gini_map(year_range: list[int], tipo: str) -> go.Figure:
+    d = _df_raw.filter(pl.col("YEAR").cast(pl.Int32).is_between(year_range[0], year_range[1]))
+    if tipo != "Todos":
+        d = d.filter(pl.col("TIPO_PLAZA") == tipo)
+
+    state_bins = (
+        d.group_by(["ENTIDAD_FEDERATIVA", "bin_idx"])
+        .agg(pl.col("count").sum())
+    )
+
+    names, ginis, labels = [], [], []
+    for state in STATES:
+        d_s = state_bins.filter(pl.col("ENTIDAD_FEDERATIVA") == state)
+        counts_map = dict(zip(d_s["bin_idx"].to_list(), d_s["count"].to_list()))
+        counts = [counts_map.get(i, 0) for i in range(_N_BINS)]
+        total_n   = sum(counts)
+        total_inc = sum(m * c for m, c in zip(_MIDPOINTS, counts))
+        gini = 0.0
+        if total_n > 0 and total_inc > 0:
+            cum_n, cum_inc, area = 0, 0.0, 0.0
+            prev_f, prev_l = 0.0, 0.0
+            for c, m in zip(counts, _MIDPOINTS):
+                cum_n   += c
+                cum_inc += m * c
+                f = cum_n   / total_n
+                l = cum_inc / total_inc
+                area   += (prev_l + l) / 2 * (f - prev_f)
+                prev_f, prev_l = f, l
+            gini = 1 - 2 * area
+        names.append(state.title())
+        ginis.append(round(gini, 4))
+        labels.append(f"{state.title()}: {gini:.3f}")
+
+    g_min = min(ginis)
+    g_max = max(ginis)
+    g_pad = (g_max - g_min) * 0.1 or 0.01
+
+    fig = go.Figure(go.Choroplethmap(
+        geojson=_MEXICO_GEOJSON,
+        locations=names,
+        z=ginis,
+        featureidkey="properties.name",
+        colorscale="RdYlGn_r",
+        zmin=round(g_min - g_pad, 3),
+        zmax=round(g_max + g_pad, 3),
+        text=labels,
+        hovertemplate="<b>%{text}</b><extra></extra>",
+        marker_line_color="#334155",
+        marker_line_width=0.5,
+        colorbar=dict(
+            title=dict(text="Gini", font=dict(color="#CBD5E1", size=11)),
+            tickfont=dict(color="#94A3B8", size=9),
+            tickformat=".3f",
+            thickness=12, len=0.6,
+        ),
+    ))
+    fig.update_layout(
+        **_DARK, height=580,
+        margin=dict(t=60, b=10, l=0, r=0),
+        title=dict(
+            text="<b>Índice Gini salarial por estado</b>"
+                 "<br><sup style='color:#94A3B8'>Percepción anual por CURP (MXN). CDMX sin datos FONE.</sup>",
+            font=dict(size=13, color="#F8FAFC"), x=0,
+        ),
+        map=dict(
+            style="carto-darkmatter",
+            center=dict(lat=23.6, lon=-102.5),
+            zoom=3.8,
+        ),
+    )
+    return fig
+
+
+def fig_gini_lines(tipo: str, selected_states: list[str], year_range: list[int]) -> go.Figure:
+    d = _df_raw.filter(pl.col("YEAR").cast(pl.Int32).is_between(year_range[0], year_range[1]))
+    if tipo != "Todos":
+        d = d.filter(pl.col("TIPO_PLAZA") == tipo)
+
+    states = selected_states if selected_states else STATES
+    years  = sorted(d["YEAR"].cast(pl.Int32).unique().to_list())
+
+    state_bins = d.group_by(["ENTIDAD_FEDERATIVA", "YEAR", "bin_idx"]).agg(pl.col("count").sum())
+
+    fig = go.Figure()
+    for si, state in enumerate(states):
+        color = _GINI_LINE_COLORS[si % len(_GINI_LINE_COLORS)]
+        ginis = []
+        for yr in years:
+            d_s = state_bins.filter(
+                (pl.col("ENTIDAD_FEDERATIVA") == state) & (pl.col("YEAR").cast(pl.Int32) == yr)
+            )
+            counts_map = dict(zip(d_s["bin_idx"].to_list(), d_s["count"].to_list()))
+            counts    = [counts_map.get(i, 0) for i in range(_N_BINS)]
+            total_n   = sum(counts)
+            total_inc = sum(m * c for m, c in zip(_MIDPOINTS, counts))
+            gini = 0.0
+            if total_n > 0 and total_inc > 0:
+                cum_n, cum_inc, area = 0, 0.0, 0.0
+                prev_f, prev_l = 0.0, 0.0
+                for c, m in zip(counts, _MIDPOINTS):
+                    cum_n   += c
+                    cum_inc += m * c
+                    f = cum_n   / total_n
+                    l = cum_inc / total_inc
+                    area   += (prev_l + l) / 2 * (f - prev_f)
+                    prev_f, prev_l = f, l
+                gini = 1 - 2 * area
+            ginis.append(round(gini, 4))
+
+        fig.add_trace(go.Scatter(
+            x=years, y=ginis, mode="lines+markers",
+            name=state.title(),
+            line=dict(color=color, width=2),
+            marker=dict(size=6),
+            hovertemplate=f"<b>{state.title()}</b><br>Año: %{{x}}<br>Gini: %{{y:.3f}}<extra></extra>",
+        ))
+
+    fig.update_layout(
+        **_DARK, height=400,
+        margin=dict(t=60, b=40, l=10, r=20),
+        title=dict(
+            text="<b>Evolución del índice Gini por estado</b>"
+                 "<br><sup style='color:#94A3B8'>Percepción anual por CURP (MXN). CDMX sin datos FONE.</sup>",
+            font=dict(size=13, color="#F8FAFC"), x=0,
+        ),
+        xaxis=dict(**_XAXIS, title="Año", tickmode="array", tickvals=years, dtick=1),
+        yaxis={**_YAXIS, "title": "Gini", "tickformat": ".3f", "showgrid": True, "gridcolor": "#334155"},
+        legend=dict(font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
     )
     return fig
 
@@ -517,6 +657,30 @@ app.layout = html.Div(
                     ],
                 ),
                 dcc.Tab(
+                    label="Mapa Gini", value="tab-gini",
+                    style=_TAB_STYLE, selected_style=_TAB_SEL_STYLE,
+                    children=[
+                        dbc.Row([
+                            dbc.Col(html.Div(dcc.Graph(id="chart-gini-map"), style=CARD_STYLE), md=12),
+                        ], className="mt-3"),
+                        dbc.Row([
+                            dbc.Col([
+                                html.Label("Estados (líneas)", style={"color": "#94A3B8", "fontSize": "12px"}),
+                                dcc.Dropdown(
+                                    id="dd-states-gini",
+                                    options=[{"label": s.title(), "value": s} for s in STATES],
+                                    value=[], multi=True, clearable=True,
+                                    placeholder="Todos los estados",
+                                    style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                                ),
+                            ], md=8),
+                        ], className="mt-3 mb-2"),
+                        dbc.Row([
+                            dbc.Col(html.Div(dcc.Graph(id="chart-gini-lines"), style=CARD_STYLE), md=12),
+                        ]),
+                    ],
+                ),
+                dcc.Tab(
                     label="Umbral por estado", value="tab-umbral",
                     style=_TAB_STYLE, selected_style=_TAB_SEL_STYLE,
                     children=[
@@ -616,6 +780,25 @@ def update_box_pctiles(year_range: list, tipo: str, selected_states: list):
     if tipo != "Todos":
         d = d.filter(pl.col("TIPO_PLAZA") == tipo)
     return fig_box_pctiles(d, selected_states or [])
+
+
+@app.callback(
+    Output("chart-gini-map", "figure"),
+    Input("sl-year", "value"),
+    Input("dd-tipo", "value"),
+)
+def update_gini_map(year_range: list, tipo: str):
+    return fig_gini_map(year_range, tipo)
+
+
+@app.callback(
+    Output("chart-gini-lines", "figure"),
+    Input("sl-year",        "value"),
+    Input("dd-tipo",        "value"),
+    Input("dd-states-gini", "value"),
+)
+def update_gini_lines(year_range: list, tipo: str, selected_states: list):
+    return fig_gini_lines(tipo, selected_states or [], year_range)
 
 
 if __name__ == "__main__":
