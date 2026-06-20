@@ -350,6 +350,7 @@ def fig_box_pctiles(d_totals: pl.DataFrame, selected_states: list[str]) -> go.Fi
         .sort(["YEAR", "ENTIDAD_FEDERATIVA"])
     )
     years = sorted(agg["YEAR"].unique().to_list())
+    year_label = str(years[0]) if len(years) == 1 else f"{years[0]}–{years[-1]}"
     fig = go.Figure()
     for year in years:
         d_y = agg.filter(pl.col("YEAR") == year)
@@ -368,7 +369,7 @@ def fig_box_pctiles(d_totals: pl.DataFrame, selected_states: list[str]) -> go.Fi
         **_DARK, boxmode="group", height=460,
         margin=dict(t=60, b=40, l=10, r=20),
         title=dict(
-            text="<b>Dispersión entre estados por percentil salarial · 2024–2026</b>"
+            text=f"<b>Dispersión entre estados por percentil salarial · {year_label}</b>"
                  "<br><sup style='color:#94A3B8'>Percepción anual por CURP (MXN). 2026 = Q1 únicamente.</sup>",
             font=dict(size=13, color="#F8FAFC"), x=0,
         ),
