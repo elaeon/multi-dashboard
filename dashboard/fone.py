@@ -123,8 +123,8 @@ def fig_percentile_bar(d_totals: pl.DataFrame, pctile_key: str) -> go.Figure:
     return fig
 
 
-def fig_hist_state(year: int, tipo: str, state: str, range_opt: str) -> go.Figure:
-    lf = _lf.filter(pl.col("YEAR").cast(pl.Int32) == year)
+def fig_hist_state(year_range: list[int], tipo: str, state: str, range_opt: str) -> go.Figure:
+    lf = _lf.filter(pl.col("YEAR").cast(pl.Int32).is_between(year_range[0], year_range[1]))
     if tipo != "Todos":
         lf = lf.filter(pl.col("TIPO_PLAZA") == tipo)
     if state != "Nacional":
@@ -271,59 +271,95 @@ def fig_pctile_scatter(d_totals: pl.DataFrame) -> go.Figure:
     return fig
 
 
-_PCTILE_COLORS = {"P50": "#4E9AF1", "P90": "#F7B731", "P95": "#FF6B35", "P99": "#E84855"}
-_DASH_CYCLE    = ["solid", "dash", "dot", "dashdot", "longdash"]
+_BOX_YEAR_COLORS = {2024: "#4E9AF1", 2025: "#F7B731", 2026: "#3BB273"}
+_STATE_COLORS    = ["#4E9AF1", "#F7B731", "#3BB273", "#FF6B35", "#E84855"]
 
 
-def fig_progress_lines(tipo: str, selected_states: list[str], pctiles: list[str]) -> go.Figure:
-    if not selected_states or not pctiles:
+def fig_box_states(d_totals: pl.DataFrame, selected_states: list[str], clip_opt: str) -> go.Figure:
+    if not selected_states:
         fig = go.Figure()
         fig.update_layout(**_DARK, height=500, margin=dict(t=50, b=40, l=10, r=20),
                           title=dict(text="Selecciona al menos un estado", font=dict(size=13, color="#94A3B8"), x=0))
         return fig
 
-    d = _df_curp_totals
-    if tipo != "Todos":
-        d = d.filter(pl.col("TIPO_PLAZA") == tipo)
+    d = d_totals.filter(pl.col("ENTIDAD_FEDERATIVA").is_in(selected_states))
+    all_vals = d["PERCEPCIONES_TRIMESTRALES"]
+    p95_clip = float(all_vals.quantile(0.95))
+    p99_clip = float(all_vals.quantile(0.99))
+    if clip_opt == "p95":
+        d = d.filter(pl.col("PERCEPCIONES_TRIMESTRALES") <= p95_clip)
+        ymax = p95_clip
+    elif clip_opt == "p99":
+        d = d.filter(pl.col("PERCEPCIONES_TRIMESTRALES") <= p99_clip)
+        ymax = p99_clip
+    else:
+        ymax = float(all_vals.max())
 
-    df = (
-        d.filter(pl.col("ENTIDAD_FEDERATIVA").is_in(selected_states))
-        .group_by(["ENTIDAD_FEDERATIVA", "YEAR"])
-        .agg([
-            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.50).alias("P50"),
-            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.90).alias("P90"),
-            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.95).alias("P95"),
-            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.99).alias("P99"),
-        ])
-        .sort(["ENTIDAD_FEDERATIVA", "YEAR"])
-    )
-
-    all_years = sorted(df["YEAR"].unique().to_list())
     fig = go.Figure()
-
-    for si, state in enumerate(selected_states):
-        dash = _DASH_CYCLE[si % len(_DASH_CYCLE)]
-        d_s  = df.filter(pl.col("ENTIDAD_FEDERATIVA") == state).sort("YEAR")
-        years = d_s["YEAR"].to_list()
-        for pct, color in _PCTILE_COLORS.items():
-            if pct not in pctiles:
-                continue
-            vals = d_s[pct].to_list()
-            fig.add_trace(go.Scatter(
-                x=years, y=vals, mode="lines+markers",
-                name=f"{state} · {pct}",
-                line=dict(color=color, dash=dash, width=2),
-                marker=dict(size=6),
-                hovertemplate=f"<b>{state} · {pct}</b><br>Año: %{{x}}<br>%{{y:,.0f}} MXN<extra></extra>",
-            ))
-
+    for i, state in enumerate(selected_states):
+        d_s   = d.filter(pl.col("ENTIDAD_FEDERATIVA") == state)
+        color = _STATE_COLORS[i % len(_STATE_COLORS)]
+        fig.add_trace(go.Box(
+            name=state,
+            x=d_s["YEAR"].cast(pl.String).to_list(),
+            y=d_s["PERCEPCIONES_TRIMESTRALES"].to_list(),
+            marker_color=color,
+            boxmean=True,
+            boxpoints="outliers",
+            hovertemplate=f"<b>{state}</b><br>Año: %{{x}}<br>%{{y:,.0f}} MXN<extra></extra>",
+        ))
     fig.update_layout(
-        **_DARK, height=520,
-        margin=dict(t=50, b=40, l=10, r=20),
-        title=dict(text="Evolución de percentiles salariales por estado", font=dict(size=13, color="#94A3B8"), x=0),
-        xaxis=dict(**_XAXIS, title="Año", tickmode="array", tickvals=all_years, dtick=1),
-        yaxis={**_YAXIS, "title": "MXN", "tickformat": ",.0f", "showgrid": True, "gridcolor": "#334155"},
-        legend=dict(font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
+        **_DARK, boxmode="group", height=520,
+        margin=dict(t=60, b=70, l=10, r=20),
+        title=dict(
+            text="<b>Distribución salarial por estado</b>"
+                 "<br><sup style='color:#94A3B8'>Percepción anual por CURP (MXN)</sup>",
+            font=dict(size=13, color="#F8FAFC"), x=0,
+        ),
+        xaxis=dict(**_XAXIS, title="Año", type="category"),
+        yaxis={**_YAXIS, "title": "MXN", "tickformat": ",.0f",
+               "showgrid": True, "gridcolor": "#334155", "range": [0, ymax * 1.05]},
+        legend=dict(orientation="h", y=-0.18, x=0, font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
+    )
+    return fig
+
+
+def fig_box_pctiles(d_totals: pl.DataFrame) -> go.Figure:
+    pctile_defs = [("P50", 0.50), ("P90", 0.90), ("P95", 0.95), ("P99", 0.99)]
+    pctile_cols = [k for k, _ in pctile_defs]
+    agg = (
+        d_totals
+        .group_by(["ENTIDAD_FEDERATIVA", "YEAR"])
+        .agg([pl.col("PERCEPCIONES_TRIMESTRALES").quantile(q).alias(k) for k, q in pctile_defs])
+        .sort(["YEAR", "ENTIDAD_FEDERATIVA"])
+    )
+    years = sorted(agg["YEAR"].unique().to_list())
+    fig = go.Figure()
+    for year in years:
+        d_y = agg.filter(pl.col("YEAR") == year)
+        states = d_y["ENTIDAD_FEDERATIVA"].to_list()
+        fig.add_trace(go.Box(
+            name=str(year),
+            x=[p for p in pctile_cols for _ in states],
+            y=[v for p in pctile_cols for v in d_y[p].to_list()],
+            text=[s for _ in pctile_cols for s in states],
+            marker_color=_BOX_YEAR_COLORS.get(year, "#CBD5E1"),
+            boxmean=True,
+            boxpoints="outliers",
+            hovertemplate="<b>%{text}</b><br>%{y:,.0f} MXN<extra></extra>",
+        ))
+    fig.update_layout(
+        **_DARK, boxmode="group", height=460,
+        margin=dict(t=60, b=40, l=10, r=20),
+        title=dict(
+            text="<b>Dispersión entre estados por percentil salarial · 2024–2026</b>"
+                 "<br><sup style='color:#94A3B8'>Percepción anual por CURP (MXN). 2026 = Q1 únicamente.</sup>",
+            font=dict(size=13, color="#F8FAFC"), x=0,
+        ),
+        xaxis=dict(**_XAXIS, title=""),
+        yaxis={**_YAXIS, "title": "MXN", "tickformat": ",.0f",
+               "showgrid": True, "gridcolor": "#334155"},
+        legend=dict(title="Año", orientation="v", font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
     )
     return fig
 
@@ -346,14 +382,15 @@ app.layout = html.Div(
 
         dbc.Row([
             dbc.Col([
-                html.Label("Año", style={"color": "#94A3B8", "fontSize": "12px"}),
-                dcc.Dropdown(
-                    id="dd-year",
-                    options=[{"label": str(y), "value": y} for y in YEARS],
-                    value=YEARS[0], clearable=False,
-                    style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                html.Label("Rango de años", style={"color": "#94A3B8", "fontSize": "12px"}),
+                dcc.RangeSlider(
+                    id="sl-year",
+                    min=YEARS[0], max=YEARS[-1], step=1,
+                    marks={y: {"label": str(y), "style": {"color": "#94A3B8"}} for y in YEARS},
+                    value=[YEARS[0], YEARS[-1]],
+                    tooltip={"placement": "bottom", "always_visible": True},
                 ),
-            ], md=3),
+            ], md=5),
             dbc.Col([
                 html.Label("Tipo de plaza", style={"color": "#94A3B8", "fontSize": "12px"}),
                 dcc.Dropdown(
@@ -384,24 +421,22 @@ app.layout = html.Div(
                                 ),
                             ], md=7),
                             dbc.Col([
-                                html.Label("Percentiles", style={"color": "#94A3B8", "fontSize": "12px"}),
-                                dcc.Checklist(
-                                    id="ck-pctiles",
+                                html.Label("Rango", style={"color": "#94A3B8", "fontSize": "12px"}),
+                                dcc.RadioItems(
+                                    id="rd-clip-comp",
                                     options=[
-                                        {"label": " P50", "value": "P50"},
-                                        {"label": " P90", "value": "P90"},
-                                        {"label": " P95", "value": "P95"},
-                                        {"label": " P99", "value": "P99"},
+                                        {"label": " Hasta P95", "value": "p95"},
+                                        {"label": " Hasta P99", "value": "p99"},
+                                        {"label": " Todo",      "value": "all"},
                                     ],
-                                    value=["P50", "P90", "P95", "P99"],
-                                    inline=True,
+                                    value="p99", inline=True,
                                     style={"color": "#CBD5E1", "fontSize": "13px", "marginTop": "6px"},
                                     inputStyle={"marginRight": "4px", "marginLeft": "12px"},
                                 ),
                             ], md=5),
                         ], className="mt-3 mb-3"),
                         dbc.Row([
-                            dbc.Col(html.Div(dcc.Graph(id="chart-progress"), style=CARD_STYLE), md=12),
+                            dbc.Col(html.Div(dcc.Graph(id="chart-comp-box"), style=CARD_STYLE), md=12),
                         ]),
                     ],
                 ),
@@ -451,6 +486,15 @@ app.layout = html.Div(
                     ],
                 ),
                 dcc.Tab(
+                    label="Dispersión entre estados", value="tab-box",
+                    style=_TAB_STYLE, selected_style=_TAB_SEL_STYLE,
+                    children=[
+                        dbc.Row([
+                            dbc.Col(html.Div(dcc.Graph(id="chart-box-pctiles"), style=CARD_STYLE), md=12),
+                        ], className="mt-3"),
+                    ],
+                ),
+                dcc.Tab(
                     label="Umbral por estado", value="tab-umbral",
                     style=_TAB_STYLE, selected_style=_TAB_SEL_STYLE,
                     children=[
@@ -491,48 +535,68 @@ app.layout = html.Div(
 
 @app.callback(
     Output("chart-umbral", "figure"),
-    Input("dd-year",   "value"),
+    Input("sl-year",   "value"),
     Input("dd-tipo",   "value"),
     Input("rd-pctile", "value"),
 )
-def update_umbral(year: int, tipo: str, pctile_key: str):
-    d = _df_curp_totals.filter(pl.col("YEAR").cast(pl.Int32) == int(year))
+def update_umbral(year_range: list, tipo: str, pctile_key: str):
+    y_min, y_max = year_range
+    d = _df_curp_totals.filter(pl.col("YEAR").cast(pl.Int32).is_between(y_min, y_max))
     if tipo != "Todos":
         d = d.filter(pl.col("TIPO_PLAZA") == tipo)
     return fig_percentile_bar(d, pctile_key)
 
 
 @app.callback(
-    Output("chart-progress", "figure"),
-    Input("dd-tipo",   "value"),
-    Input("dd-states", "value"),
-    Input("ck-pctiles", "value"),
+    Output("chart-comp-box", "figure"),
+    Input("sl-year",      "value"),
+    Input("dd-tipo",      "value"),
+    Input("dd-states",    "value"),
+    Input("rd-clip-comp", "value"),
 )
-def update_progress(tipo: str, selected_states: list, pctiles: list):
-    return fig_progress_lines(tipo, selected_states or [], pctiles or [])
+def update_comp_box(year_range: list, tipo: str, selected_states: list, clip_opt: str):
+    y_min, y_max = year_range
+    d = _df_curp_totals.filter(pl.col("YEAR").cast(pl.Int32).is_between(y_min, y_max))
+    if tipo != "Todos":
+        d = d.filter(pl.col("TIPO_PLAZA") == tipo)
+    return fig_box_states(d, selected_states or [], clip_opt)
 
 
 @app.callback(
     Output("chart-hist-state", "figure"),
-    Input("dd-year",  "value"),
+    Input("sl-year",  "value"),
     Input("dd-tipo",  "value"),
     Input("dd-state", "value"),
     Input("rd-range", "value"),
 )
-def update_hist_state(year: int, tipo: str, state: str, range_opt: str):
-    return fig_hist_state(int(year), tipo, state, range_opt)
+def update_hist_state(year_range: list, tipo: str, state: str, range_opt: str):
+    return fig_hist_state(year_range, tipo, state, range_opt)
 
 
 @app.callback(
     Output("chart-scatter", "figure"),
-    Input("dd-year", "value"),
+    Input("sl-year", "value"),
     Input("dd-tipo", "value"),
 )
-def update_scatter(year: int, tipo: str):
-    d = _df_curp_totals.filter(pl.col("YEAR").cast(pl.Int32) == int(year))
+def update_scatter(year_range: list, tipo: str):
+    y_min, y_max = year_range
+    d = _df_curp_totals.filter(pl.col("YEAR").cast(pl.Int32).is_between(y_min, y_max))
     if tipo != "Todos":
         d = d.filter(pl.col("TIPO_PLAZA") == tipo)
     return fig_pctile_scatter(d)
+
+
+@app.callback(
+    Output("chart-box-pctiles", "figure"),
+    Input("sl-year", "value"),
+    Input("dd-tipo", "value"),
+)
+def update_box_pctiles(year_range: list, tipo: str):
+    y_min, y_max = year_range
+    d = _df_curp_totals.filter(pl.col("YEAR").cast(pl.Int32).is_between(y_min, y_max))
+    if tipo != "Todos":
+        d = d.filter(pl.col("TIPO_PLAZA") == tipo)
+    return fig_box_pctiles(d)
 
 
 if __name__ == "__main__":
