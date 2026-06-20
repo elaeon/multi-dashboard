@@ -7,6 +7,7 @@ Usage (run from project root):
     uv run python scripts/query_fone.py --year 2024 --curp GOTL490218HJCMRS05 ZAMR630919HNTTNB05
     uv run python scripts/query_fone.py --year 2024 --curp GOTL490218HJCMRS05 --out /tmp/result.csv
     uv run python scripts/query_fone.py --year 2024 --curp GOTL490218HJCMRS05 --agg
+    uv run python scripts/query_fone.py --year 2024 --curp GOTL490218HJCMRS05 --total
 """
 import argparse
 import glob
@@ -19,10 +20,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Consulta registros de PlazasDocAdmtvasDirec por año y CURP · FONE"
     )
-    parser.add_argument("--year", type=int, required=True, help="Año (ej. 2024)")
-    parser.add_argument("--curp", nargs="+", required=True, help="Uno o más CURPs")
-    parser.add_argument("--agg",  action="store_true", help="Agregar por YEAR, QUARTER, TIPO_PLAZA y sumar percepciones")
-    parser.add_argument("--out",  default="-", help="Ruta CSV de salida (default: stdout)")
+    parser.add_argument("--year",  type=int, required=True, help="Año (ej. 2024)")
+    parser.add_argument("--curp",  nargs="+", required=True, help="Uno o más CURPs")
+    parser.add_argument("--agg",   action="store_true", help="Agregar por YEAR, QUARTER, TIPO_PLAZA y sumar percepciones")
+    parser.add_argument("--total", action="store_true", help="Total anual por CURP y TIPO_PLAZA (colapsa trimestres)")
+    parser.add_argument("--out",   default="-", help="Ruta CSV de salida (default: stdout)")
     args = parser.parse_args()
 
     paths = sorted(glob.glob("data/fone/*/PlazasDocAdmtvasDirec_*.parquet"))
@@ -44,7 +46,14 @@ def main() -> None:
     if result.is_empty():
         sys.exit(f"Sin resultados para year={args.year}, CURP(s)={curps}")
 
-    if args.agg:
+    if args.total:
+        result = (
+            result
+            .group_by(["CURP", "YEAR", "TIPO_PLAZA"])
+            .agg(pl.col("PERCEPCIONES_TRIMESTRALES").sum().alias("PERCEPCIONES_ANUALES"))
+            .sort(["CURP", "YEAR", "TIPO_PLAZA"])
+        )
+    elif args.agg:
         result = (
             result
             .group_by(["CURP", "YEAR", "QUARTER", "TIPO_PLAZA"])

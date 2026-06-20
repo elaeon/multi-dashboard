@@ -64,10 +64,12 @@ def main() -> None:
 
     # Build per-CURP annual totals
     curp_totals = (
-        lf.group_by(["CURP", "ENTIDAD_FEDERATIVA", "TIPO_PLAZA"])
+        lf.group_by(["CURP"])
         .agg(
             pl.col("NOMBRE").first(),
             pl.col("RFC").first(),
+            pl.col("ENTIDAD_FEDERATIVA").first(),
+            pl.col("TIPO_PLAZA").first(),
             pl.col("PERCEPCIONES_TRIMESTRALES").sum().alias("PERCEPCIONES_ANUALES"),
         )
         .filter(pl.col("PERCEPCIONES_ANUALES") > 0)
