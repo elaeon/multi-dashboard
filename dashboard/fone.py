@@ -285,10 +285,10 @@ _GINI_LINE_COLORS = [
 
 
 def fig_progress_lines(tipo: str, selected_states: list[str], pctiles: list[str], year_range: list[int]) -> go.Figure:
-    if not selected_states or not pctiles:
+    if not pctiles:
         fig = go.Figure()
         fig.update_layout(**_DARK, height=500, margin=dict(t=50, b=40, l=10, r=20),
-                          title=dict(text="Selecciona al menos un estado", font=dict(size=13, color="#94A3B8"), x=0))
+                          title=dict(text="Selecciona al menos un percentil", font=dict(size=13, color="#94A3B8"), x=0))
         return fig
 
     d = _df_curp_totals
@@ -296,36 +296,60 @@ def fig_progress_lines(tipo: str, selected_states: list[str], pctiles: list[str]
         d = d.filter(pl.col("TIPO_PLAZA") == tipo)
     d = d.filter(pl.col("YEAR").cast(pl.Int32).is_between(year_range[0], year_range[1]))
 
-    df = (
-        d.filter(pl.col("ENTIDAD_FEDERATIVA").is_in(selected_states))
-        .group_by(["ENTIDAD_FEDERATIVA", "YEAR"])
-        .agg([
-            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.50).alias("P50"),
-            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.90).alias("P90"),
-            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.95).alias("P95"),
-            pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.99).alias("P99"),
-        ])
-        .sort(["ENTIDAD_FEDERATIVA", "YEAR"])
-    )
+    national_mode = not selected_states
 
-    all_years = sorted(df["YEAR"].unique().to_list())
-    fig = go.Figure()
-
-    for si, state in enumerate(selected_states):
-        dash = _DASH_CYCLE[si % len(_DASH_CYCLE)]
-        d_s  = df.filter(pl.col("ENTIDAD_FEDERATIVA") == state).sort("YEAR")
-        years = d_s["YEAR"].to_list()
+    if national_mode:
+        df = (
+            d.group_by("YEAR")
+            .agg([
+                pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.50).alias("P50"),
+                pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.90).alias("P90"),
+                pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.95).alias("P95"),
+                pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.99).alias("P99"),
+            ])
+            .sort("YEAR")
+        )
+        all_years = sorted(df["YEAR"].unique().to_list())
+        fig = go.Figure()
         for pct, color in _PCTILE_COLORS.items():
             if pct not in pctiles:
                 continue
-            vals = d_s[pct].to_list()
             fig.add_trace(go.Scatter(
-                x=years, y=vals, mode="lines+markers",
-                name=f"{state} · {pct}",
-                line=dict(color=color, dash=dash, width=2),
+                x=df["YEAR"].to_list(), y=df[pct].to_list(), mode="lines+markers",
+                name=f"Nacional · {pct}",
+                line=dict(color=color, width=2),
                 marker=dict(size=6),
-                hovertemplate=f"<b>{state} · {pct}</b><br>Año: %{{x}}<br>%{{y:,.0f}} MXN<extra></extra>",
+                hovertemplate=f"<b>Nacional · {pct}</b><br>Año: %{{x}}<br>%{{y:,.0f}} MXN<extra></extra>",
             ))
+    else:
+        df = (
+            d.filter(pl.col("ENTIDAD_FEDERATIVA").is_in(selected_states))
+            .group_by(["ENTIDAD_FEDERATIVA", "YEAR"])
+            .agg([
+                pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.50).alias("P50"),
+                pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.90).alias("P90"),
+                pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.95).alias("P95"),
+                pl.col("PERCEPCIONES_TRIMESTRALES").quantile(0.99).alias("P99"),
+            ])
+            .sort(["ENTIDAD_FEDERATIVA", "YEAR"])
+        )
+        all_years = sorted(df["YEAR"].unique().to_list())
+        fig = go.Figure()
+        for si, state in enumerate(selected_states):
+            dash = _DASH_CYCLE[si % len(_DASH_CYCLE)]
+            d_s  = df.filter(pl.col("ENTIDAD_FEDERATIVA") == state).sort("YEAR")
+            years = d_s["YEAR"].to_list()
+            for pct, color in _PCTILE_COLORS.items():
+                if pct not in pctiles:
+                    continue
+                vals = d_s[pct].to_list()
+                fig.add_trace(go.Scatter(
+                    x=years, y=vals, mode="lines+markers",
+                    name=f"{state} · {pct}",
+                    line=dict(color=color, dash=dash, width=2),
+                    marker=dict(size=6),
+                    hovertemplate=f"<b>{state} · {pct}</b><br>Año: %{{x}}<br>%{{y:,.0f}} MXN<extra></extra>",
+                ))
 
     fig.update_layout(
         **_DARK, height=520,
@@ -336,6 +360,7 @@ def fig_progress_lines(tipo: str, selected_states: list[str], pctiles: list[str]
         legend=dict(font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
     )
     return fig
+
 
 
 def fig_box_pctiles(d_totals: pl.DataFrame, selected_states: list[str]) -> go.Figure:
@@ -565,7 +590,7 @@ app.layout = html.Div(
                                 dcc.Dropdown(
                                     id="dd-states",
                                     options=[{"label": s, "value": s} for s in STATES],
-                                    value=STATES[:3], multi=True, clearable=False,
+                                    value=[], multi=True, clearable=True,
                                     style={"backgroundColor": "#1E293B", "color": "#0F172A"},
                                 ),
                             ], md=7),
@@ -743,6 +768,7 @@ def update_umbral(year_range: list, tipo: str, pctile_key: str):
 )
 def update_progress(year_range: list, tipo: str, selected_states: list, pctiles: list):
     return fig_progress_lines(tipo, selected_states or [], pctiles or [], year_range)
+
 
 
 @app.callback(
