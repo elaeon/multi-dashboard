@@ -1,7 +1,8 @@
 """
 Extrae tablas de producción/volumen minero por entidad federativa del Anuario SGM.
 
-Uso:
+Uso (PDFs con capa de texto nativa):
+
   uv run scripts/extract_sgm_produccion.py \\
       --pdf data/sgm/raw/Anuario_2024_Edicion_2025.pdf \\
       --out data/sgm/produccion_minera_entidad_2020_2024.csv \\
@@ -12,6 +13,26 @@ Uso:
       --out data/sgm/produccion_minera_entidad_2015_2019.csv \\
       --start 58 --end 88 --years 2015 2016 2017 2018 2019 \\
       --unidad-val "Pesos corrientes"
+
+  uv run scripts/extract_sgm_produccion.py \\
+      --pdf data/sgm/raw/Anuario_2014_Edicion_2015.pdf \\
+      --out data/sgm/produccion_minera_entidad_2010_2014.csv \\
+      --start 52 --end 83 --years 2010 2011 2012 2013 2014 \\
+      --unidad-val "Pesos Corrientes"
+
+  uv run scripts/extract_sgm_produccion.py \\
+      --pdf data/sgm/raw/Anuario_2009_ult.pdf \\
+      --out data/sgm/produccion_minera_entidad_2005_2009.csv \\
+      --start 60 --end 91 --years 2005 2006 2007 2008 2009 \\
+      --unidad-val "Pesos corrientes"
+
+  uv run scripts/extract_sgm_produccion.py \\
+      --pdf data/sgm/raw/Anuario_2004.pdf \\
+      --out data/sgm/produccion_minera_entidad_2000_2004.csv \\
+      --start 25 --end 56 --years 2000 2001 2002 2003 2004 \\
+      --unidad-val "Pesos corrientes"
+
+Para PDFs escaneados (sin capa de texto) usar scripts/extract_sgm_produccion_ocr.py.
 
 Columnas de salida: estado, tabla, categoria, producto, unidad, año, valor
 """
