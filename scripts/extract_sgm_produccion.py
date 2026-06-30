@@ -201,7 +201,7 @@ def main() -> None:
                 detected, yr_min_x0 = detect_year_header(line, years)
                 if detected:
                     year_cols = detected
-                    prod_end = yr_min_x0 - 5
+                    prod_end = yr_min_x0 - 20
                     continue
 
                 # Sin contexto suficiente todavía
