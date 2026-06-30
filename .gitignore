@@ -1,7 +1,9 @@
 __pycache__
 uv.lock
 .playwright
+.playwright-cli/
 .claude/skills/playwright-cli/
+data/*
 data/*.csv
 data/*.xlsx
 data/*.xls

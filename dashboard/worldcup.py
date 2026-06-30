@@ -68,6 +68,133 @@ HOSTS = {
 
 POINT_MAP = {1: 7, 2: 5, 3: 4, 4: 3, 5: 2, 9: 1, 17: 0}
 
+# confederation → sub_confederation for every World Cup participant (historical + current)
+# Keys match pos_long["country"] (post-POS_NORM; Russia=SovietUnion, Germany=WestGermany, etc.)
+# Australia: mapped to AFC (joined 2006); their 1974 appearance was as OFC.
+# Israel: 1970 appearance was AFC; now UEFA.
+CONF_MAP = {
+    # UEFA — Europe (no sub-confederations)
+    "Austria":               ("UEFA", "UEFA"),
+    "Belgium":               ("UEFA", "UEFA"),
+    "Bosnia and Herzegovina":("UEFA", "UEFA"),
+    "Bulgaria":              ("UEFA", "UEFA"),
+    "Croatia":               ("UEFA", "UEFA"),
+    "Czech Republic":        ("UEFA", "UEFA"),
+    "Denmark":               ("UEFA", "UEFA"),
+    "East Germany":          ("UEFA", "UEFA"),
+    "England":               ("UEFA", "UEFA"),
+    "France":                ("UEFA", "UEFA"),
+    "Germany":               ("UEFA", "UEFA"),
+    "Greece":                ("UEFA", "UEFA"),
+    "Hungary":               ("UEFA", "UEFA"),
+    "Iceland":               ("UEFA", "UEFA"),
+    "Ireland":               ("UEFA", "UEFA"),
+    "Italy":                 ("UEFA", "UEFA"),
+    "Netherlands":           ("UEFA", "UEFA"),
+    "Northern Ireland":      ("UEFA", "UEFA"),
+    "Norway":                ("UEFA", "UEFA"),
+    "Poland":                ("UEFA", "UEFA"),
+    "Portugal":              ("UEFA", "UEFA"),
+    "Republic of Ireland":   ("UEFA", "UEFA"),
+    "Romania":               ("UEFA", "UEFA"),
+    "Russia":                ("UEFA", "UEFA"),
+    "Scotland":              ("UEFA", "UEFA"),
+    "Serbia":                ("UEFA", "UEFA"),
+    "Serbia-Montenegro":     ("UEFA", "UEFA"),
+    "Slovakia":              ("UEFA", "UEFA"),
+    "Slovenia":              ("UEFA", "UEFA"),
+    "Spain":                 ("UEFA", "UEFA"),
+    "Sweden":                ("UEFA", "UEFA"),
+    "Switzerland":           ("UEFA", "UEFA"),
+    "Turkey":                ("UEFA", "UEFA"),
+    "Ukraine":               ("UEFA", "UEFA"),
+    "Wales":                 ("UEFA", "UEFA"),
+    "Yugoslavia":            ("UEFA", "UEFA"),
+    # CONMEBOL — South America (no sub-confederations)
+    "Argentina":             ("CONMEBOL", "CONMEBOL"),
+    "Bolivia":               ("CONMEBOL", "CONMEBOL"),
+    "Brazil":                ("CONMEBOL", "CONMEBOL"),
+    "Chile":                 ("CONMEBOL", "CONMEBOL"),
+    "Colombia":              ("CONMEBOL", "CONMEBOL"),
+    "Ecuador":               ("CONMEBOL", "CONMEBOL"),
+    "Paraguay":              ("CONMEBOL", "CONMEBOL"),
+    "Peru":                  ("CONMEBOL", "CONMEBOL"),
+    "Uruguay":               ("CONMEBOL", "CONMEBOL"),
+    # CONCACAF — North/Central America & Caribbean
+    "Canada":                ("CONCACAF", "NAFU"),
+    "Mexico":                ("CONCACAF", "NAFU"),
+    "United States":         ("CONCACAF", "NAFU"),
+    "Costa Rica":            ("CONCACAF", "UNCAF"),
+    "El Salvador":           ("CONCACAF", "UNCAF"),
+    "Honduras":              ("CONCACAF", "UNCAF"),
+    "Panama":                ("CONCACAF", "UNCAF"),
+    "Cuba":                  ("CONCACAF", "CFU"),
+    "Haiti":                 ("CONCACAF", "CFU"),
+    "Jamaica":               ("CONCACAF", "CFU"),
+    "Trinidad and Tobago":   ("CONCACAF", "CFU"),
+    # AFC — Asia
+    "Australia":             ("AFC", "AFF"),
+    "Indonesia":             ("AFC", "AFF"),
+    "Iran":                  ("AFC", "CAFA"),
+    "China":                 ("AFC", "EAFF"),
+    "Japan":                 ("AFC", "EAFF"),
+    "North Korea":           ("AFC", "EAFF"),
+    "South Korea":           ("AFC", "EAFF"),
+    "Iraq":                  ("AFC", "WAFF"),
+    "Israel":                ("AFC", "WAFF"),
+    "Kuwait":                ("AFC", "WAFF"),
+    "Qatar":                 ("AFC", "WAFF"),
+    "Saudi Arabia":          ("AFC", "WAFF"),
+    "United Arab Emirates":  ("AFC", "WAFF"),
+    # CAF — Africa
+    "Algeria":               ("CAF", "UNAF"),
+    "Egypt":                 ("CAF", "UNAF"),
+    "Morocco":               ("CAF", "UNAF"),
+    "Tunisia":               ("CAF", "UNAF"),
+    "Ghana":                 ("CAF", "WAFU"),
+    "Ivory Coast":           ("CAF", "WAFU"),
+    "Nigeria":               ("CAF", "WAFU"),
+    "Senegal":               ("CAF", "WAFU"),
+    "Togo":                  ("CAF", "WAFU"),
+    "Cameroon":              ("CAF", "UNIFFAC"),
+    "DR Congo":              ("CAF", "UNIFFAC"),
+    "Angola":                ("CAF", "COSAFA"),
+    "South Africa":          ("CAF", "COSAFA"),
+    # OFC — Oceania (no sub-confederations)
+    "New Zealand":           ("OFC", "OFC"),
+}
+
+CONF_COLORS = {
+    "UEFA":     "#2E86AB",
+    "CONMEBOL": "#F4A261",
+    "CONCACAF": "#3BB273",
+    "AFC":      "#E84855",
+    "CAF":      "#FFD700",
+    "OFC":      "#94A3B8",
+}
+_CONF_ORDER = ["UEFA", "CONMEBOL", "CONCACAF", "AFC", "CAF", "OFC"]
+
+SUBCONF_COLORS = {
+    # AFC sub-confederations (shades of red)
+    "WAFF":    "#E84855",
+    "EAFF":    "#C73B46",
+    "CAFA":    "#FF6B6B",
+    "AFF":     "#FF9999",
+    # CAF sub-confederations (shades of gold)
+    "UNAF":    "#FFD700",
+    "WAFU":    "#F0C000",
+    "UNIFFAC": "#D4A800",
+    "COSAFA":  "#B89000",
+    # CONCACAF sub-confederations (shades of green)
+    "NAFU":    "#3BB273",
+    "UNCAF":   "#2A9D5C",
+    "CFU":     "#1A8A4A",
+    # Same-as-parent for single-group confederations
+    "UEFA":    "#2E86AB",
+    "CONMEBOL":"#F4A261",
+    "OFC":     "#94A3B8",
+}
+
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 def load_data():
@@ -322,6 +449,72 @@ gpm_pos = (
     .join(pos_long.rename({"country": "team"}), on=["team", "year"], how="inner")
     .select(["team", "year", "gpm", "position", "matches"])
     .filter(pl.col("position").is_not_null())
+)
+
+# ── Confederation aggregates ──────────────────────────────────────────────────
+
+# pos_long annotated with confederation + sub-confederation + POINT_MAP score
+_conf_pts = pos_long.with_columns([
+    pl.col("country").map_elements(
+        lambda c: CONF_MAP.get(c, ("Unknown", "Unknown"))[0], return_dtype=pl.String
+    ).alias("conf"),
+    pl.col("country").map_elements(
+        lambda c: CONF_MAP.get(c, ("Unknown", "Unknown"))[1], return_dtype=pl.String
+    ).alias("subconf"),
+    (
+        pl.when(pl.col("position") == 1).then(7)
+        .when(pl.col("position") == 2).then(5)
+        .when(pl.col("position") == 3).then(4)
+        .when(pl.col("position") == 4).then(3)
+        .when(pl.col("position") == 5).then(2)
+        .when(pl.col("position") == 9).then(1)
+        .otherwise(0)
+    ).alias("pts"),
+]).filter(pl.col("conf").is_in(_CONF_ORDER))
+
+# Teams per confederation per edition (stacked bar source)
+conf_participation = (
+    _conf_pts
+    .group_by(["conf", "year"])
+    .agg(pl.len().alias("n_teams"))
+    .sort(["year", "conf"])
+)
+
+# Avg points per team per confederation per edition (line chart source)
+conf_avg_pts = (
+    _conf_pts
+    .group_by(["conf", "year"])
+    .agg(pl.col("pts").mean().round(2).alias("avg_pts"))
+    .sort(["year", "conf"])
+)
+
+# All-time milestone totals per confederation (champion bar + KPI cards)
+conf_alltime = (
+    _conf_pts
+    .group_by("conf")
+    .agg([
+        (pl.col("position") == 1).sum().alias("titles"),
+        (pl.col("position") == 2).sum().alias("finals"),
+        (pl.col("position") <= 4).sum().alias("top4"),
+        pl.len().alias("total_entries"),
+    ])
+    .sort("titles", descending=True)
+)
+_conf_kpi = {r["conf"]: r for r in conf_alltime.iter_rows(named=True)}
+
+# Sub-confederation aggregates (for AFC/CAF/CONCACAF drill-down only)
+_subconf_pts = _conf_pts.filter(pl.col("conf").is_in(["AFC", "CAF", "CONCACAF"]))
+subconf_participation = (
+    _subconf_pts
+    .group_by(["conf", "subconf", "year"])
+    .agg(pl.len().alias("n_teams"))
+    .sort(["year", "subconf"])
+)
+subconf_avg_pts = (
+    _subconf_pts
+    .group_by(["conf", "subconf", "year"])
+    .agg(pl.col("pts").mean().round(2).alias("avg_pts"))
+    .sort(["year", "subconf"])
 )
 
 # ── Figure factories ──────────────────────────────────────────────────────────
@@ -898,6 +1091,189 @@ def fig_gpm_vs_position() -> go.Figure:
     return fig
 
 
+# ── Confederation figure factories ───────────────────────────────────────────
+
+def fig_conf_participation() -> go.Figure:
+    """Stacked bar: number of teams per confederation per World Cup edition."""
+    fig = go.Figure()
+    for conf in _CONF_ORDER:
+        sub = conf_participation.filter(pl.col("conf") == conf).sort("year")
+        if len(sub) == 0:
+            continue
+        fig.add_trace(go.Bar(
+            x=sub["year"].to_list(),
+            y=sub["n_teams"].to_list(),
+            name=conf,
+            marker_color=CONF_COLORS[conf],
+            hovertemplate=f"<b>{conf}</b> %{{x}}<br>%{{y}} teams<extra></extra>",
+        ))
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title="<b>Africa and Asia have tripled their World Cup spots since 1970</b>"
+              "<br><sup style='color:#94A3B8'>Teams qualified per confederation per edition</sup>",
+        barmode="stack",
+        xaxis=dict(
+            gridcolor="#334155", title="Edition",
+            tickmode="array", tickvals=years_list,
+            ticktext=[str(y) for y in years_list], tickangle=-45,
+        ),
+        yaxis=dict(gridcolor="#334155", title="Teams"),
+        legend=dict(orientation="h", y=1.15, x=0, font=dict(size=11)),
+        margin=dict(t=70, b=90, l=10, r=10),
+        height=400,
+    )
+    return fig
+
+
+def fig_conf_avg_points() -> go.Figure:
+    """Line chart: avg RSSSF points per team per confederation per edition."""
+    fig = go.Figure()
+    for conf in _CONF_ORDER:
+        sub = conf_avg_pts.filter(pl.col("conf") == conf).sort("year")
+        if len(sub) == 0:
+            continue
+        n_teams_by_year = (
+            conf_participation.filter(pl.col("conf") == conf).sort("year")["n_teams"].to_list()
+        )
+        fig.add_trace(go.Scatter(
+            x=sub["year"].to_list(),
+            y=sub["avg_pts"].to_list(),
+            mode="lines+markers",
+            name=conf,
+            line=dict(color=CONF_COLORS[conf], width=2),
+            marker=dict(size=7, color=CONF_COLORS[conf], line=dict(color="#0F172A", width=1)),
+            customdata=n_teams_by_year,
+            hovertemplate=(
+                f"<b>{conf}</b> %{{x}}<br>"
+                "Avg pts/team: %{y:.2f}<br>"
+                "(%{customdata} teams)<extra></extra>"
+            ),
+        ))
+    fig.add_hline(y=0, line_dash="dot", line_color="#475569",
+                  annotation_text="Group stage (0 pts)", annotation_font_color="#64748B",
+                  annotation_position="bottom right")
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title="<b>CONMEBOL consistently outperforms its size — </b><br><b>SA teams average 2× the points of AFC</b>"
+              "<br><sup style='color:#94A3B8'>Avg score per team (Champion=7, Runner-up=5, 3rd=4, "
+              "4th=3, QF=2, R16=1, Group=0)</sup>",
+        xaxis=dict(
+            gridcolor="#334155", title="Edition",
+            tickmode="array", tickvals=years_list,
+            ticktext=[str(y) for y in years_list], tickangle=-45,
+        ),
+        yaxis=dict(gridcolor="#334155", title="Avg points per team"),
+        legend=dict(orientation="h", y=1.48, x=0, font=dict(size=11)),
+        margin=dict(t=80, b=90, l=10, r=10),
+        height=420,
+    )
+    return fig
+
+
+def fig_conf_milestones() -> go.Figure:
+    """Grouped horizontal bar: titles / finalist / top-4 counts per confederation."""
+    d = conf_alltime.sort("titles", descending=True)
+    confs = d["conf"].to_list()
+    light = {c: CONF_COLORS[c] + "88" for c in CONF_COLORS}  # 53% opacity via hex
+
+    fig = go.Figure()
+    for col, name, opacity in [("top4", "Top-4", 0.35), ("finals", "Finalist", 0.65), ("titles", "Champion", 1.0)]:
+        fig.add_trace(go.Bar(
+            y=confs,
+            x=d[col].to_list(),
+            orientation="h",
+            name=name,
+            marker_color=[CONF_COLORS[c] for c in confs],
+            marker_opacity=opacity,
+            hovertemplate=f"<b>%{{y}}</b><br>{name}: %{{x}}<extra></extra>",
+        ))
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title="<b>22 champions — all from UEFA or CONMEBOL</b>"
+              "<br><sup style='color:#94A3B8'>All-time podium appearances per confederation (1930–2022)</sup>",
+        barmode="group",
+        xaxis=dict(gridcolor="#334155", title="Count"),
+        yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+        legend=dict(orientation="h", y=-0.18, x=0),
+        margin=dict(t=70, b=80, l=90, r=10),
+        height=max(280, len(confs) * 44 + 80),
+    )
+    return fig
+
+
+def fig_subconf_participation(conf: str) -> go.Figure:
+    """Stacked bar: teams per sub-confederation per edition (for one main confederation)."""
+    d = subconf_participation.filter(pl.col("conf") == conf).sort("year")
+    sub_confs = sorted(d["subconf"].unique().to_list())
+    fig = go.Figure()
+    for sc in sub_confs:
+        sub = d.filter(pl.col("subconf") == sc).sort("year")
+        if len(sub) == 0:
+            continue
+        fig.add_trace(go.Bar(
+            x=sub["year"].to_list(),
+            y=sub["n_teams"].to_list(),
+            name=sc,
+            marker_color=SUBCONF_COLORS.get(sc, "#64748B"),
+            hovertemplate=f"<b>{sc}</b> %{{x}}<br>%{{y}} teams<extra></extra>",
+        ))
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title=f"<b>{conf} sub-confederation participation</b>"
+              f"<br><sup style='color:#94A3B8'>Teams per sub-confederation per edition</sup>",
+        barmode="stack",
+        xaxis=dict(
+            gridcolor="#334155", title="Edition",
+            tickmode="array", tickvals=years_list,
+            ticktext=[str(y) for y in years_list], tickangle=-45,
+        ),
+        yaxis=dict(gridcolor="#334155", title="Teams"),
+        legend=dict(orientation="h", y=-0.22, x=0, font=dict(size=11)),
+        margin=dict(t=60, b=100, l=10, r=10),
+        height=360,
+    )
+    return fig
+
+
+def fig_subconf_avg_pts(conf: str) -> go.Figure:
+    """Line chart: avg points per sub-confederation per edition (for one main confederation)."""
+    d = subconf_avg_pts.filter(pl.col("conf") == conf).sort("year")
+    sub_confs = sorted(d["subconf"].unique().to_list())
+    fig = go.Figure()
+    for sc in sub_confs:
+        sub = d.filter(pl.col("subconf") == sc).sort("year")
+        if len(sub) == 0:
+            continue
+        color = SUBCONF_COLORS.get(sc, "#64748B")
+        fig.add_trace(go.Scatter(
+            x=sub["year"].to_list(),
+            y=sub["avg_pts"].to_list(),
+            mode="lines+markers",
+            name=sc,
+            line=dict(color=color, width=2),
+            marker=dict(size=7, color=color, line=dict(color="#0F172A", width=1)),
+            hovertemplate=f"<b>{sc}</b> %{{x}}<br>Avg pts: %{{y:.2f}}<extra></extra>",
+        ))
+    fig.add_hline(y=0, line_dash="dot", line_color="#475569",
+                  annotation_text="Group stage baseline", annotation_font_color="#64748B",
+                  annotation_position="bottom right")
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title=f"<b>{conf} average performance by sub-confederation</b>"
+              f"<br><sup style='color:#94A3B8'>Avg POINT_MAP score per team per edition</sup>",
+        xaxis=dict(
+            gridcolor="#334155", title="Edition",
+            tickmode="array", tickvals=years_list,
+            ticktext=[str(y) for y in years_list], tickangle=-45,
+        ),
+        yaxis=dict(gridcolor="#334155", title="Avg pts per team"),
+        legend=dict(orientation="h", y=-0.22, x=0, font=dict(size=11)),
+        margin=dict(t=60, b=100, l=10, r=10),
+        height=360,
+    )
+    return fig
+
+
 # ── App layout ────────────────────────────────────────────────────────────────
 
 app = Dash(
@@ -1124,6 +1500,82 @@ app.layout = html.Div(style={"backgroundColor": "#0F172A", "minHeight": "100vh",
                 dbc.Col(dcc.Graph(figure=fig_gpm_vs_position(),        config={"displayModeBar": False}), md=12),
             ], className="mt-2"),
         ]),
+
+        # ── Tab 7: Confederations ─────────────────────────────────────────────
+        dcc.Tab(label="Confederations", style=TAB_STYLE, selected_style=TAB_SEL, children=[
+            html.H5("Confederation Performance 1930–2022",
+                    style={"color": "#F8FAFC", "marginTop": "16px", "marginBottom": "4px"}),
+            html.P(
+                "RSSSF official positions · 6 FIFA confederations · 22 editions",
+                style={"color": "#94A3B8", "fontSize": "0.85rem", "marginBottom": "16px"},
+            ),
+
+            # KPI row — one card per confederation
+            dbc.Row([
+                dbc.Col(html.Div([
+                    html.Div(conf, style={"fontSize": "1rem", "fontWeight": "700",
+                                         "color": CONF_COLORS[conf]}),
+                    html.Div(
+                        str(_conf_kpi.get(conf, {}).get("titles", 0)),
+                        style={"fontSize": "2rem", "fontWeight": "800", "color": "#F8FAFC"},
+                    ),
+                    html.Div("titles", style={"fontSize": "0.75rem", "color": "#94A3B8"}),
+                    html.Div(
+                        f"{_conf_kpi.get(conf, {}).get('finals', 0)} finals · "
+                        f"{_conf_kpi.get(conf, {}).get('top4', 0)} top-4",
+                        style={"fontSize": "0.72rem", "color": "#64748B"},
+                    ),
+                ], style=CARD_STYLE), md=2)
+                for conf in _CONF_ORDER
+            ], className="g-2 mb-4"),
+
+            # Row 1: Participation (left) + Avg points timeline (right)
+            dbc.Row([
+                dbc.Col(dcc.Graph(figure=fig_conf_participation(),
+                                  config={"displayModeBar": False}), md=6),
+                dbc.Col(dcc.Graph(figure=fig_conf_avg_points(),
+                                  config={"displayModeBar": False}), md=6),
+            ], className="mt-2"),
+
+            # Row 2: Champion / finalist / top-4 breakdown
+            dbc.Row([
+                dbc.Col(dcc.Graph(figure=fig_conf_milestones(),
+                                  config={"displayModeBar": False}), md=12),
+            ], className="mt-2"),
+
+            # Sub-confederation drill-down (AFC / CAF / CONCACAF only)
+            html.Hr(style={"borderColor": "#334155", "marginTop": "24px", "marginBottom": "16px"}),
+            html.H6("Sub-confederation Breakdown",
+                    style={"color": "#94A3B8", "marginBottom": "8px"}),
+            html.P(
+                "Sub-confederations only exist for AFC, CAF, and CONCACAF — "
+                "UEFA and CONMEBOL compete as one block.",
+                style={"color": "#64748B", "fontSize": "0.8rem", "marginBottom": "12px"},
+            ),
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Select confederation:", style={"color": "#94A3B8"}),
+                    dcc.Dropdown(
+                        id="subconf-dropdown",
+                        options=[
+                            {"label": "AFC — Asia", "value": "AFC"},
+                            {"label": "CAF — Africa", "value": "CAF"},
+                            {"label": "CONCACAF — Americas", "value": "CONCACAF"},
+                        ],
+                        value="AFC",
+                        clearable=False,
+                        style={"backgroundColor": "#1E293B", "color": "#0F172A"},
+                        className="mb-3",
+                    ),
+                ], md=4),
+            ]),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id="subconf-participation",
+                                  config={"displayModeBar": False}), md=6),
+                dbc.Col(dcc.Graph(id="subconf-avgpts",
+                                  config={"displayModeBar": False}), md=6),
+            ]),
+        ]),
     ]),
 ])
 
@@ -1284,6 +1736,15 @@ def update_team(country: str):
         fig_team_wdl(country),
         kpis,
     )
+
+
+@app.callback(
+    Output("subconf-participation", "figure"),
+    Output("subconf-avgpts", "figure"),
+    Input("subconf-dropdown", "value"),
+)
+def update_subconf(conf: str):
+    return fig_subconf_participation(conf), fig_subconf_avg_pts(conf)
 
 
 if __name__ == "__main__":
