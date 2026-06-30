@@ -85,17 +85,26 @@ def group_by_line(words: list[dict], y_tol: float = 4) -> list[list[dict]]:
     return [sorted(ws, key=lambda w: w["x0"]) for _, ws in sorted(buckets.items())]
 
 
-def detect_year_header(line: list[dict], years: list[str]) -> dict[str, float] | None:
+def detect_year_header(
+    line: list[dict], years: list[str]
+) -> tuple[dict[str, float], float] | tuple[None, None]:
     """Detecta fila de encabezado buscando ≥2 años esperados en la línea.
 
-    No requiere 'Productos/Años' en la misma línea, lo que resuelve el caso
-    del Anuario 2019 donde el encabezado se divide en dos líneas (y_tol las separa).
+    Usa regex para extraer el año del inicio del token, lo que maneja tokens
+    fusionados como "2014p/" (Anuario 2014 en Nayarit).
+    Devuelve (cols, min_x0) o (None, None).
     """
-    cols = {}
+    cols: dict[str, float] = {}
+    min_x0 = float("inf")
     for w in line:
-        if w["text"] in years:
-            cols[w["text"]] = (w["x0"] + w["x1"]) / 2
-    return cols if len(cols) >= 2 else None
+        m = re.match(r"^(\d{4})", w["text"])
+        if m and m.group(1) in years:
+            yr = m.group(1)
+            cols[yr] = (w["x0"] + w["x1"]) / 2
+            min_x0 = min(min_x0, w["x0"])
+    if len(cols) >= 2:
+        return cols, min_x0
+    return None, None
 
 
 def assign_col(word: dict, year_cols: dict[str, float], prod_end: float) -> str | None:
@@ -187,13 +196,12 @@ def main() -> None:
                     year_cols = {}
                     continue
 
-                # Fila de encabezado de años (funciona aunque esté en línea separada)
-                detected = detect_year_header(line, years)
+                # Fila de encabezado de años (funciona aunque esté en línea separada
+                # y aunque "2014" esté fusionado con "p/" como "2014p/")
+                detected, yr_min_x0 = detect_year_header(line, years)
                 if detected:
                     year_cols = detected
-                    yr_words = [w for w in line if w["text"] in years]
-                    if yr_words:
-                        prod_end = min(w["x0"] for w in yr_words) - 5
+                    prod_end = yr_min_x0 - 5
                     continue
 
                 # Sin contexto suficiente todavía
