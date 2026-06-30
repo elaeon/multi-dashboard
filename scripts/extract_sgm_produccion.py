@@ -1,28 +1,48 @@
 """
-Extrae tablas de producción minera por entidad federativa (pp. 52-97)
-del Anuario Estadístico de la Minería Mexicana 2024 (SGM).
+Extrae tablas de producción/volumen minero por entidad federativa del Anuario SGM.
 
-Salida: data/sgm/produccion_minera_entidad_2020_2024.csv
-Columnas: estado, tabla, categoria, producto, unidad, año, valor
+Uso:
+  uv run scripts/extract_sgm_produccion.py \\
+      --pdf data/sgm/raw/Anuario_2024_Edicion_2025.pdf \\
+      --out data/sgm/produccion_minera_entidad_2020_2024.csv \\
+      --start 51 --end 96 --years 2020 2021 2022 2023 2024
+
+  uv run scripts/extract_sgm_produccion.py \\
+      --pdf data/sgm/raw/Anuario_2019_Edicion_2020.pdf \\
+      --out data/sgm/produccion_minera_entidad_2015_2019.csv \\
+      --start 58 --end 88 --years 2015 2016 2017 2018 2019 \\
+      --unidad-val "Pesos corrientes"
+
+Columnas de salida: estado, tabla, categoria, producto, unidad, año, valor
 """
 
+import argparse
 import re
 from pathlib import Path
 
 import pandas as pd
 import pdfplumber
 
-PDF = Path("data/sgm/raw/Anuario_2024_Edicion_2025.pdf")
-OUT = Path("data/sgm/produccion_minera_entidad_2020_2024.csv")
+# "6.1 Aguascalientes" (2024) y "6.1. Aguascalientes" (2019)
+SECCION_RE = re.compile(r"^6\.(\d+)\.?\s+(.+)")
 
-START_PAGE = 51  # 0-indexed (página 52 del PDF)
-END_PAGE = 96    # 0-indexed (página 97 del PDF)
+# Líneas de notas: asteriscos (2024) y números ordinales (2019), p.ej. "1/ Mineral..."
+SKIP_RE = re.compile(r"^(p/[\s]|\d+/[\s]|Fuente|Nota|Gobierno|N/D\s|\*+)", re.I)
 
-YEARS = ["2020", "2021", "2022", "2023", "2024"]
+# Línea de unidad bajo el título de tabla: "(Toneladas)", "(Pesos Corrientes)", etc.
+UNIT_LINE_RE = re.compile(r"^\((Toneladas|[Pp]esos|Miles de pesos|kilogramos)", re.I)
 
-SECCION_RE = re.compile(r"^6\.(\d+)\s+(.+)")
-SKIP_RE = re.compile(r"^(p/[\s]|Fuente|Nota|\*+)", re.I)
-UNIT_LINE_RE = re.compile(r"^\((Toneladas|Miles de pesos|kilogramos)", re.I)
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Extrae tablas de producción minera del Anuario SGM")
+    p.add_argument("--pdf", required=True, type=Path)
+    p.add_argument("--out", required=True, type=Path)
+    p.add_argument("--start", type=int, required=True, help="Página inicio 0-indexed")
+    p.add_argument("--end", type=int, required=True, help="Página fin 0-indexed (inclusive)")
+    p.add_argument("--years", nargs="+", required=True, help="Años a extraer, e.g. 2020 2021 ...")
+    p.add_argument("--unidad-val", default="Miles de pesos corrientes",
+                   help="Unidad de la tabla de valor (default: 'Miles de pesos corrientes')")
+    return p.parse_args()
 
 
 def clean_product(name: str) -> tuple[str, str | None]:
@@ -33,16 +53,21 @@ def clean_product(name: str) -> tuple[str, str | None]:
     name = re.sub(r"\s*\([^)]+\)\s*$", "", name).strip()
     name = re.sub(r"\*+$", "", name).strip()
     name = re.sub(r"[:]+\s*$", "", name).strip()
-    name = re.sub(r"\s+\d+\s*$", "", name).strip()  # footnote refs: "Metálicos 6" → "Metálicos"
-    # Normalizar variantes sin acento
+    name = re.sub(r"\s+\d+\s*$", "", name).strip()   # refs superíndice: "Metálicos 6" → "Metálicos"
+    name = re.sub(r"\s+\d+/$", "", name).strip()     # notas numéricas: "Arena 1/" → "Arena"
     name = re.sub(r"^Metalicos$", "Metálicos", name, flags=re.I)
-    name = re.sub(r"^No metalicos$", "No metálicos", name, flags=re.I)
+    name = re.sub(r"^No [Mm]etalicos$", "No metálicos", name, flags=re.I)
     return name, unit
 
 
 def parse_num(tokens: list[str]) -> float | None:
-    """Une tokens del mismo campo (e.g. ['45', '577.00'] → 45577.0)."""
-    s = "".join(tokens).replace(" ", "").replace(",", ".")
+    """Une tokens del mismo campo y parsea como float.
+
+    Maneja:
+    - Espacio como separador de miles (2024): ['45', '577.00'] → 45577.0
+    - Coma como separador de miles (2019): ['2,120,154.68'] → 2120154.68
+    """
+    s = "".join(tokens).replace(" ", "").replace(",", "")
     if not s or s == "-" or s.lower() in ("nd", "n.d.", "n/d"):
         return None
     try:
@@ -60,16 +85,17 @@ def group_by_line(words: list[dict], y_tol: float = 4) -> list[list[dict]]:
     return [sorted(ws, key=lambda w: w["x0"]) for _, ws in sorted(buckets.items())]
 
 
-def detect_year_header(line: list[dict]) -> dict[str, float] | None:
-    """Si la línea es 'Productos/Años | 2020 | ... | 2024', devuelve {año: x_centro}."""
-    text = " ".join(w["text"] for w in line)
-    if not re.search(r"Productos", text, re.I):
-        return None
+def detect_year_header(line: list[dict], years: list[str]) -> dict[str, float] | None:
+    """Detecta fila de encabezado buscando ≥2 años esperados en la línea.
+
+    No requiere 'Productos/Años' en la misma línea, lo que resuelve el caso
+    del Anuario 2019 donde el encabezado se divide en dos líneas (y_tol las separa).
+    """
     cols = {}
     for w in line:
-        if re.match(r"^202[0-4]$", w["text"]):
+        if w["text"] in years:
             cols[w["text"]] = (w["x0"] + w["x1"]) / 2
-    return cols or None
+    return cols if len(cols) >= 2 else None
 
 
 def assign_col(word: dict, year_cols: dict[str, float], prod_end: float) -> str | None:
@@ -103,8 +129,10 @@ def parse_data_row(
 
 
 def main() -> None:
-    rows: list[dict] = []
+    args = parse_args()
+    years: list[str] = args.years
 
+    rows: list[dict] = []
     current_estado: str | None = None
     current_tabla: str | None = None
     current_unidad_base: str | None = None
@@ -112,8 +140,8 @@ def main() -> None:
     year_cols: dict[str, float] = {}
     prod_end: float = 150.0
 
-    with pdfplumber.open(PDF) as pdf:
-        for page_idx in range(START_PAGE, END_PAGE + 1):
+    with pdfplumber.open(args.pdf) as pdf:
+        for page_idx in range(args.start, args.end + 1):
             page = pdf.pages[page_idx]
             words = page.extract_words(x_tolerance=3, y_tolerance=3)
             lines = group_by_line(words)
@@ -123,15 +151,14 @@ def main() -> None:
                     continue
                 text = " ".join(w["text"] for w in line).strip()
 
-                # Notas al pie, fuentes, líneas de unidad como "(Toneladas)"
+                # Notas al pie y líneas de unidad
                 if SKIP_RE.match(text) or UNIT_LINE_RE.match(text):
                     continue
 
-                # Encabezado de sección estatal: "6.X Nombre del Estado"
+                # Encabezado de sección estatal: "6.X [.] Nombre del Estado"
                 m = SECCION_RE.match(text)
                 if m:
                     state_raw = m.group(2).strip()
-                    # Por si el título de tabla aparece en la misma línea
                     state_name = re.split(r"\s{3,}", state_raw)[0].strip()
                     current_estado = state_name
                     current_tabla = None
@@ -139,26 +166,32 @@ def main() -> None:
                     year_cols = {}
                     continue
 
-                # Anclas de tipo de tabla (match exacto para evitar falsos positivos
-                # como encabezados de capítulo "Producción minera por entidad...")
-                if re.fullmatch(r"Valor de la producci[oó]n minera", text, re.I):
+                # Ancla tabla valor (primero, para que "Valor de..." no active la de volumen)
+                if re.search(r"Valor de la [Pp]roducci[oó]n", text, re.I):
                     current_tabla = "valor"
-                    current_unidad_base = "Miles de pesos corrientes"
+                    current_unidad_base = args.unidad_val
                     current_categoria = None
                     year_cols = {}
                     continue
-                if re.fullmatch(r"Producci[oó]n minera", text, re.I):
+
+                # Ancla tabla volumen/producción
+                # Excluye: "Valor de...", "...por entidad federativa" (título de capítulo),
+                # "Volumen y Valor..." (título de capítulo en edición 2019)
+                if (re.search(r"(Volumen de la |)Producci[oó]n [Mm]inera", text, re.I)
+                        and "Valor" not in text
+                        and "entidad" not in text.lower()
+                        and "y Valor" not in text):
                     current_tabla = "produccion"
                     current_unidad_base = "Toneladas"
                     current_categoria = None
                     year_cols = {}
                     continue
 
-                # Fila de encabezado de años: "Productos/Años | 2020 | ... | 2024"
-                detected = detect_year_header(line)
+                # Fila de encabezado de años (funciona aunque esté en línea separada)
+                detected = detect_year_header(line, years)
                 if detected:
                     year_cols = detected
-                    yr_words = [w for w in line if re.match(r"^202[0-4]$", w["text"])]
+                    yr_words = [w for w in line if w["text"] in years]
                     if yr_words:
                         prod_end = min(w["x0"] for w in yr_words) - 5
                     continue
@@ -186,13 +219,9 @@ def main() -> None:
                     if re.search(r"no met", cat_label, re.I):
                         current_categoria = "No metálicos"
                     elif re.search("agregados", cat_label, re.I):
-                        # El sub-bloque Agregados pétreos está bajo No metálicos;
-                        # emitir esta fila con su propia etiqueta pero dejar
-                        # current_categoria = "No metálicos" para los sub-items.
                         current_categoria = "No metálicos"
                     else:
                         current_categoria = "Metálicos"
-                    # Emitir sólo si la fila tiene al menos un valor (subtotales en tabla=valor)
                     if not any(parse_num(ts) is not None for ts in col_tokens.values()):
                         continue
 
@@ -202,7 +231,7 @@ def main() -> None:
 
                 unidad = unit_override if unit_override else current_unidad_base
 
-                for yr in YEARS:
+                for yr in years:
                     rows.append(
                         {
                             "estado": current_estado,
@@ -216,32 +245,16 @@ def main() -> None:
                     )
 
     df = pd.DataFrame(rows)
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(OUT, index=False, encoding="utf-8")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(args.out, index=False, encoding="utf-8")
 
-    print(f"Guardado: {OUT}")
+    print(f"Guardado: {args.out}")
     print(f"Filas totales: {len(df):,}")
     print(f"Estados únicos: {df['estado'].nunique()}")
     print(f"Tablas: {sorted(df['tabla'].unique())}")
     print()
     print("Productos únicos por tabla/categoría:")
     print(df.groupby(["tabla", "categoria"])["producto"].nunique().to_string())
-    print()
-
-    # Spot-checks
-    checks = [
-        ("Aguascalientes", "produccion", "Plata", 2020, 45577.0),
-        ("Sonora", "produccion", "Oro", 2024, 38360.3),
-    ]
-    for estado, tabla, prod, yr, expected in checks:
-        val = df[
-            (df["estado"] == estado)
-            & (df["tabla"] == tabla)
-            & (df["producto"] == prod)
-            & (df["año"] == yr)
-        ]["valor"].values
-        status = "OK" if val.size and abs(val[0] - expected) < 1 else "REVISAR"
-        print(f"[{status}] {estado} {prod} {yr}: {val} (esperado ~{expected})")
 
 
 if __name__ == "__main__":
