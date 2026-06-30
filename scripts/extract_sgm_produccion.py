@@ -27,7 +27,7 @@ import pdfplumber
 SECCION_RE = re.compile(r"^6\.(\d+)\.?\s+(.+)")
 
 # Líneas de notas: asteriscos (2024) y números ordinales (2019), p.ej. "1/ Mineral..."
-SKIP_RE = re.compile(r"^(p/[\s]|\d+/[\s]|Fuente|Nota|Gobierno|N/D\s|\*+)", re.I)
+SKIP_RE = re.compile(r"^(Anuario|p/[\s]|\d+/[\s]|Fuente|Nota|Gobierno|N/D\s|N\.D\.\s|\*+)", re.I)
 
 # Línea de unidad bajo el título de tabla: "(Toneladas)", "(Pesos Corrientes)", etc.
 UNIT_LINE_RE = re.compile(r"^\((Toneladas|[Pp]esos|Miles de pesos|kilogramos)", re.I)
@@ -87,12 +87,13 @@ def group_by_line(words: list[dict], y_tol: float = 4) -> list[list[dict]]:
 
 def detect_year_header(
     line: list[dict], years: list[str]
-) -> tuple[dict[str, float], float] | tuple[None, None]:
+) -> tuple[dict[str, float], float, float] | tuple[None, None, None]:
     """Detecta fila de encabezado buscando ≥2 años esperados en la línea.
 
     Usa regex para extraer el año del inicio del token, lo que maneja tokens
     fusionados como "2014p/" (Anuario 2014 en Nayarit).
-    Devuelve (cols, min_x0) o (None, None).
+    Devuelve (cols, min_x0, label_x1) o (None, None, None).
+    label_x1 es el x1 máximo de los tokens no-año a la izquierda del primer año.
     """
     cols: dict[str, float] = {}
     min_x0 = float("inf")
@@ -102,9 +103,13 @@ def detect_year_header(
             yr = m.group(1)
             cols[yr] = (w["x0"] + w["x1"]) / 2
             min_x0 = min(min_x0, w["x0"])
-    if len(cols) >= 2:
-        return cols, min_x0
-    return None, None
+    if len(cols) < 2:
+        return None, None, None
+    label_x1 = max(
+        (w["x1"] for w in line if w["x0"] < min_x0 and not re.match(r"^\d{4}", w["text"])),
+        default=0.0,
+    )
+    return cols, min_x0, label_x1
 
 
 def assign_col(word: dict, year_cols: dict[str, float], prod_end: float) -> str | None:
@@ -198,10 +203,10 @@ def main() -> None:
 
                 # Fila de encabezado de años (funciona aunque esté en línea separada
                 # y aunque "2014" esté fusionado con "p/" como "2014p/")
-                detected, yr_min_x0 = detect_year_header(line, years)
+                detected, yr_min_x0, label_x1 = detect_year_header(line, years)
                 if detected:
                     year_cols = detected
-                    prod_end = yr_min_x0 - 20
+                    prod_end = min(label_x1 + 10, yr_min_x0 - 5)
                     continue
 
                 # Sin contexto suficiente todavía
