@@ -1,0 +1,172 @@
+---
+name: data-hawk
+description: >
+  Scan all DATA_OVERVIEW.md files under data/, synthesize a master cross-dataset index at
+  data/DATA_HAWK_INDEX.md, and identify high-value join opportunities between datasets.
+  Invoke at the start of any multi-dataset analysis, after new DATA_OVERVIEW.md files are
+  created, or when asked "what datasets can I join?" or "what analysis opportunities exist?"
+  The skill is incremental: only re-reads overviews that changed since the last run.
+---
+
+# data-hawk
+
+Builds and maintains `data/DATA_HAWK_INDEX.md` — the authoritative cross-dataset catalog:
+join dimensions, high-value combination opportunities, and coverage gaps.
+
+---
+
+## When to invoke
+
+- Start of any multi-dataset dashboard or analysis task
+- After `data-explorer` writes a new `DATA_OVERVIEW.md` into a dataset folder
+- When asked which datasets can be joined, or what analysis the data supports
+- Do not invoke inside another skill's procedure — call it first as a standalone step
+
+---
+
+## Execution procedure
+
+### Step 1 — Run the scan script
+
+```bash
+python3 .claude/skills/data-hawk/scripts/scan_overviews.py
+```
+
+Parse the JSON output. Key fields:
+- `overview_count` — total DATA_OVERVIEW.md files found
+- `new_or_changed_count` — overviews newer than the index's embedded `generated` timestamp
+- `index_exists` — whether `data/DATA_HAWK_INDEX.md` already exists
+- `index_generated` — ISO timestamp from the existing index (null if none)
+- `overviews[]` — each entry: `path`, `dataset_dir`, `mtime_iso`, `size_bytes`, `is_new_or_changed`
+- `gaps[]` — each entry: `path`, `sample_files`, `file_count_gte`
+
+### Step 2 — Decide build mode
+
+**`index_exists == false`** → Full build. Read every overview.
+
+**`new_or_changed_count == 0`** → Index is current. Print:
+> "DATA_HAWK_INDEX.md is up to date (last generated: {index_generated}, {overview_count} datasets)."
+Stop here.
+
+**`new_or_changed_count > 0` and `index_exists == true`** → Incremental update:
+- Read `data/DATA_HAWK_INDEX.md`
+- Parse the Dataset Catalog table: extract rows for datasets where `is_new_or_changed == false` (these are kept as-is)
+- Read only overviews where `is_new_or_changed == true`
+- Merge new/updated catalog rows with the unchanged ones
+- Rebuild all zones (catalog + join registry + opportunities + gaps) from the merged data
+
+### Step 3 — Extract from each overview being read
+
+For every DATA_OVERVIEW.md that needs reading, extract these fields:
+
+| Field | Where to look |
+|---|---|
+| **Dataset name** | H1 header title |
+| **Source institution** | "Source:" line near the top |
+| **Temporal coverage** | Year range in the header or Coverage section; "static" if no time dimension |
+| **Geographic granularity** | Finest grain in the data — one of: `nacional` / `estado` / `municipio` / `localidad` / `internacional` / `programa/carrera` |
+| **Primary join keys** | Column names that could link to other datasets (CVE_ENT, Clave_Ent, año, CVE_MUN, cve_mun, ramo, carrera, ISO code…) — list the exact column names |
+| **Total rows** | Aggregate across files; write `~Xm` for millions; `varies` if strongly year-dependent |
+| **File formats** | csv / parquet / xlsx / zip |
+| **Key gotcha** | One line — the most important loading warning |
+
+Extract exact column names and values. Do not paraphrase narrative text.
+If a field is absent from the file, write `unknown` — never infer.
+
+### Step 4 — Synthesize the join dimension registry
+
+After extracting all datasets (merged catalog), group by shared dimension. For each dimension found in 2+ datasets:
+
+- `CVE_ENT` / `Clave_Ent` / `cve_ent` — state code 01–32 (note int vs zero-padded string discrepancies)
+- `año` / `Año` / `AÑO` — calendar year
+- `CVE_MUN` / `cve_mun` — 5-digit EEMMM municipality composite
+- `ramo` — federal budget entity (relevant for cgpe_normalized joins)
+- `carrera` / degree program — UNAM subdatasets
+- `Origin ISO` / `Destination ISO` — international migration (distinct from Mexico-internal keys)
+
+For each dimension: list dataset, exact column name, type, and any normalization needed to join.
+
+### Step 5 — Identify high-value join opportunities
+
+A join is high-value when:
+1. Two or more datasets share a dimension at a useful granularity
+2. The combined data answers a question neither can answer alone
+3. The overlapping time period has ≥3 data points (for time-series joins)
+
+Write 4–8 opportunities ordered by analytical impact. For each:
+- Descriptive title
+- Datasets involved
+- Join dimensions and overlapping years/grain
+- One sentence on the specific question it answers
+- One sentence on the join hazard (or "none")
+
+Reference specific column names from the overviews — no generic placeholders.
+
+### Step 6 — Write data/DATA_HAWK_INDEX.md
+
+Use the Write tool. Follow this schema exactly — the machine header and catalog column order are parsed by future incremental runs.
+
+```
+<!-- data-hawk-index: generated=YYYY-MM-DDTHH:MM:SS+00:00 overviews=N -->
+
+# DATA_HAWK_INDEX
+
+> Generated by `/data-hawk` · {date} · {N} datasets cataloged · {G} coverage gaps
+> Re-run `/data-hawk` after adding new DATA_OVERVIEW.md files to update.
+
+---
+
+## Dataset Catalog
+
+| Dataset | Source | Temporal | Granularity | Join Keys | Total Rows | Overview |
+|---|---|---|---|---|---|---|
+| {name} | {institution} | {years} | {granularity} | `{key1}`, `{key2}` | {rows} | [link]({rel_path}) |
+
+---
+
+## Join Dimension Registry
+
+### `CVE_ENT` / `Clave_Ent` — State code (01–32)
+
+| Dataset | Column | Type | Notes |
+|---|---|---|---|
+| {dataset_dir} | `{col}` | {type} | {note} |
+
+### `año` — Year
+
+...one H3 subsection per shared dimension...
+
+---
+
+## High-Value Join Opportunities
+
+### 1. {Title} ({grain} × {time range})
+
+**Datasets:** {A} + {B}
+**Join dimensions:** `{col}` × `{col}` ({overlap years})
+**Question answered:** {one sentence}
+**Join hazard:** {one sentence, or "none"}
+
+...
+
+---
+
+## Coverage Gaps
+
+Directories with data files but no DATA_OVERVIEW.md. Run `data-explorer` on each to fill the gap.
+
+| Path | Sample Files |
+|---|---|
+| {path} | {file1}, {file2} |
+```
+
+**Schema rules:**
+- Line 1 must be the `<!-- data-hawk-index: generated=... -->` comment, exactly in that format — never omit it
+- Catalog column 7 (the `Overview` link) is the identity key for incremental row matching; its column position must not change
+- Catalog rows sorted alphabetically by `dataset_dir`
+- Join registry and opportunities sections are always fully rebuilt (even on incremental runs)
+- Gaps section is always replaced from the latest scan output
+
+### After writing
+
+Print: "DATA_HAWK_INDEX.md written — {N} datasets, {J} join dimensions, {K} opportunities, {G} gaps."
