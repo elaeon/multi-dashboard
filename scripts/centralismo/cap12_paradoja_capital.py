@@ -234,33 +234,43 @@ def e1_renta(pob: pl.DataFrame):
 
 # ---------------------------------------------------------------- D. E2 frontera ZMVM
 
-def e2_zmvm():
-    print("\n=== D. E2 — Frontera administrativa: alcaldías CDMX vs Edomex conurbado ===")
-    def carga_mun(filtro, nombre):
-        return (pl.scan_parquet(PARQUET_INC)
-                .filter(pl.col("Año").is_in([2023, 2024]) & filtro)
-                .with_columns(pl.sum_horizontal(MESES).alias("casos"))
-                .group_by("Cve. Municipio", "Municipio", "Clave_Ent")
-                .agg((pl.sum("casos") / 2).alias(nombre))
-                .collect())
-
-    hom = carga_mun(HOMICIDIO, "hom")
-    ext = carga_mun(EXTORSION, "ext").select("Cve. Municipio", "ext")
-    pob = (pl.read_csv(RAIZ / "data/conapo/municipios_2020_todos.csv")
-           .select(pl.col("CLAVE").cast(pl.Int64).alias("Cve. Municipio"),
-                   pl.col("POB_TOTAL").cast(pl.Float64).alias("pob")))
-
+def cves_conurbados() -> set[int]:
+    """CONURBADOS_EDOMEX resueltos por nombre contra el padrón municipal SESNSP."""
     import unicodedata
     def clave(s):
         return unicodedata.normalize("NFD", str(s)).encode("ascii", "ignore").decode().lower().strip()
 
-    munis_mex = hom.filter(pl.col("Clave_Ent") == EDOMEX).with_columns(
-        pl.col("Municipio").map_elements(clave, return_dtype=pl.Utf8).alias("mun_clave"))
-    cves_con = set()
+    munis = (pl.scan_parquet(PARQUET_INC)
+             .filter(pl.col("Clave_Ent") == EDOMEX)
+             .select("Cve. Municipio", "Municipio").unique().collect()
+             .with_columns(pl.col("Municipio")
+                           .map_elements(clave, return_dtype=pl.Utf8).alias("mun_clave")))
+    cves = set()
     for nombre in CONURBADOS_EDOMEX:
-        m = munis_mex.filter(pl.col("mun_clave") == clave(nombre))
+        m = munis.filter(pl.col("mun_clave") == clave(nombre))
         assert m.height == 1, f"conurbado no resuelto: {nombre!r} ({m.height})"
-        cves_con.add(int(m["Cve. Municipio"][0]))
+        cves.add(int(m["Cve. Municipio"][0]))
+    return cves
+
+
+def carga_mun_zmvm(filtro: pl.Expr, nombre: str) -> pl.DataFrame:
+    """Casos anuales promedio 2023-2024 por municipio (para el test ZMVM)."""
+    return (pl.scan_parquet(PARQUET_INC)
+            .filter(pl.col("Año").is_in([2023, 2024]) & filtro)
+            .with_columns(pl.sum_horizontal(MESES).alias("casos"))
+            .group_by("Cve. Municipio", "Municipio", "Clave_Ent")
+            .agg((pl.sum("casos") / 2).alias(nombre))
+            .collect())
+
+
+def e2_zmvm():
+    print("\n=== D. E2 — Frontera administrativa: alcaldías CDMX vs Edomex conurbado ===")
+    hom = carga_mun_zmvm(HOMICIDIO, "hom")
+    ext = carga_mun_zmvm(EXTORSION, "ext").select("Cve. Municipio", "ext")
+    pob = (pl.read_csv(RAIZ / "data/conapo/municipios_2020_todos.csv")
+           .select(pl.col("CLAVE").cast(pl.Int64).alias("Cve. Municipio"),
+                   pl.col("POB_TOTAL").cast(pl.Float64).alias("pob")))
+    cves_con = cves_conurbados()
 
     base = (hom.join(ext, on="Cve. Municipio", how="left")
             .join(pob, on="Cve. Municipio", how="inner")
