@@ -71,11 +71,20 @@ def load_manifests(cngmd_dir: Path, filter_years: set[str] | None) -> dict[str, 
     return by_year
 
 
-def download_year(session: requests.Session, base_dir: Path, year: str, urls: list[str], dry_run: bool) -> tuple[int, int]:
-    """Return (ok_count, total_count)."""
+def download_year(
+    session: requests.Session,
+    base_dir: Path,
+    year: str,
+    urls: list[str],
+    dry_run: bool,
+    ok_offset: int,
+    grand_total: int,
+) -> tuple[int, list[str]]:
+    """Return (ok_count, errors). ok_offset/grand_total are for cross-year progress display."""
     dest_dir = base_dir / year
     dest_dir.mkdir(parents=True, exist_ok=True)
     ok = 0
+    errors: list[str] = []
     for url in urls:
         parts = url.split("/")
         filename = f"{parts[-2]}_{parts[-1]}"
@@ -90,16 +99,20 @@ def download_year(session: requests.Session, base_dir: Path, year: str, urls: li
             r = session.get(url, timeout=120)
             r.raise_for_status()
         except Exception as e:
-            print(f"ERROR {url}: {e}")
+            msg = f"{year}/{filename}: {e}"
+            print(f"ERROR {msg}")
+            errors.append(msg)
             continue
         if not is_zip(r.content):
-            print(f"MISS  {year}/{filename} (soft-404, {len(r.content)} bytes)")
+            msg = f"{year}/{filename} (soft-404, {len(r.content)} bytes)"
+            print(f"MISS  {msg}")
+            errors.append(msg)
             continue
         dest.write_bytes(r.content)
-        print(f"OK    {year}/{filename} ({len(r.content) // 1024:,} KB)")
         ok += 1
+        print(f"OK    {year}/{filename} ({len(r.content) // 1024:,} KB)  [{ok_offset + ok}/{grand_total}]")
         time.sleep(DELAY)
-    return ok, len(urls)
+    return ok, errors
 
 
 def check_downloads(base_dir: Path, by_year: dict[str, list[str]]) -> None:
@@ -144,14 +157,20 @@ def main() -> None:
     session = requests.Session()
     session.headers.update(HEADERS)
 
-    total_ok = total_all = 0
+    grand_total = sum(len(v) for v in by_year.values())
+    total_ok = 0
+    all_errors: list[str] = []
     for year in sorted(by_year):
         urls = by_year[year]
         print(f"\n--- {year} ({len(urls)} files) ---")
-        ok, total = download_year(session, base_dir, year, urls, args.dry_run)
+        ok, errors = download_year(session, base_dir, year, urls, args.dry_run, total_ok, grand_total)
         total_ok += ok
-        total_all += total
-    print(f"\nDownloaded {total_ok}/{total_all} files")
+        all_errors.extend(errors)
+    print(f"\nDownloaded {total_ok}/{grand_total} files")
+    if all_errors:
+        print(f"\nErrors ({len(all_errors)}):")
+        for err in all_errors:
+            print(f"  {err}")
 
 
 if __name__ == "__main__":
