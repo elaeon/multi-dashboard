@@ -9,8 +9,8 @@ Uso:
     uv run python scripts/csv_to_parquet.py <input_dir> <output.parquet>
 
 Ejemplo:
-    uv run python scripts/csv_to_parquet.py data/becas_CNBBBJ data/becas.parquet
-    # Genera columnas: particion_1 (nivel educativo), particion_2 (año)
+    uv run python scripts/csv_to_parquet.py data/datos_gob/becas_CNBBBJ/{YEAR} data/datos_gob/becas_CNBBBJ/{YEAR}
+    # Genera columnas: particion_1 (nivel educativo)
 """
 
 import sys
@@ -20,9 +20,27 @@ import polars as pl
 import pyarrow.parquet as pq
 
 
+partition_names_map = {
+    "partition_1": "nivel_educativo"
+}
+
+schema = {
+    "TRIMESTRE": pl.String,
+    "CVE_EDO": pl.String,
+    "NOM_EDO": pl.String,
+    "CVE_MUN": pl.String,
+    "NOM_MUN": pl.String,
+    "CVE_LOC": pl.String,
+    "NOM_LOC": pl.String,
+    "BECA": pl.Float64,
+    "FECHA_ALTA": pl.Date,
+    "nivel_educativo": pl.String
+}
+
+
 def partition_names(root: Path, csv_paths: list[Path]) -> list[str]:
     max_depth = max(len(p.relative_to(root).parts) - 1 for p in csv_paths)
-    return [f"particion_{i + 1}" for i in range(max_depth)]
+    return [partition_names_map[f"partition_{i + 1}"] for i in range(max_depth)]
 
 
 def main():
@@ -55,6 +73,8 @@ def main():
         df = pl.read_csv(path, infer_schema_length=0)
         for col_name, value in zip(cols, parts):
             df = df.with_columns(pl.lit(value).alias(col_name))
+            df = df.with_columns(pl.col("FECHA_ALTA").str.to_date(format="%d/%m/%Y"))
+            df = df.cast(schema)
 
         table = df.to_arrow()
         if writer is None:
