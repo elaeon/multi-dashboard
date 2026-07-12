@@ -1,28 +1,28 @@
 """
-Convierte un árbol de CSVs a un único archivo Parquet.
+Convierte el tar.gz de becas_CNBBBJ de un año a un único archivo Parquet.
 
-Las carpetas intermedias entre el directorio raíz y cada CSV se agregan
-como columnas de partición en el orden en que aparecen en la ruta.
-Escribe de forma incremental: un archivo a la vez en memoria.
+Los subdirectorios dentro del tar (basica, media_superior, superior) se agregan
+como columna de partición `nivel_educativo`. Lee en memoria sin descomprimir al disco.
 
 Uso:
-    uv run python scripts/csv_to_parquet.py <input_dir> <output.parquet>
+    uv run python scripts/becas_CNBBBJ_to_parquet.py <year>
 
 Ejemplo:
-    uv run python scripts/csv_to_parquet.py data/datos_gob/becas_CNBBBJ/{YEAR} data/datos_gob/becas_CNBBBJ/{YEAR}
-    # Genera columnas: particion_1 (nivel educativo)
+    uv run python scripts/becas_CNBBBJ_to_parquet.py 2025
+    # Lee:    data/datos_gob/becas_CNBBBJ/2025.tar.gz
+    # Genera: data/datos_gob/becas_CNBBBJ/becas_2025.parquet
 """
 
+import io
 import sys
+import tarfile
 from pathlib import Path
 
 import polars as pl
 import pyarrow.parquet as pq
 
 
-partition_names_map = {
-    "partition_1": "nivel_educativo"
-}
+BASE = Path("data/datos_gob/becas_CNBBBJ")
 
 schema = {
     "TRIMESTRE": pl.String,
@@ -34,62 +34,57 @@ schema = {
     "NOM_LOC": pl.String,
     "BECA": pl.Float64,
     "FECHA_ALTA": pl.Date,
-    "nivel_educativo": pl.String
+    "nivel_educativo": pl.String,
 }
 
 
-def partition_names(root: Path, csv_paths: list[Path]) -> list[str]:
-    max_depth = max(len(p.relative_to(root).parts) - 1 for p in csv_paths)
-    return [partition_names_map[f"partition_{i + 1}"] for i in range(max_depth)]
-
-
 def main():
-    if len(sys.argv) != 3:
-        print("Uso: uv run python scripts/csv_to_parquet.py <input_dir> <output.parquet>")
+    if len(sys.argv) != 2:
+        print("Uso: uv run python scripts/becas_CNBBBJ_to_parquet.py <year>")
         sys.exit(1)
 
-    root = Path(sys.argv[1])
-    output = Path(sys.argv[2])
+    year = sys.argv[1]
+    input_path = BASE / f"{year}.tar.gz"
+    output_path = BASE / f"becas_{year}.parquet"
 
-    if not root.is_dir():
-        print(f"Error: {root} no es un directorio válido")
+    if not input_path.exists():
+        print(f"Error: {input_path} no encontrado")
         sys.exit(1)
 
-    csv_paths = sorted(root.rglob("*.csv"))
-    if not csv_paths:
-        print(f"Error: no se encontraron archivos CSV en {root}")
-        sys.exit(1)
-
-    cols = partition_names(root, csv_paths)
-    print(f"Columnas de partición: {cols}  ({len(csv_paths)} archivos)")
-
-    output.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     writer = None
     total = 0
 
-    for path in csv_paths:
-        parts = path.relative_to(root).parts[:-1]
-        df = pl.read_csv(path, infer_schema_length=0)
-        for col_name, value in zip(cols, parts):
-            df = df.with_columns(pl.lit(value).alias(col_name))
+    with tarfile.open(input_path, "r:gz") as tar:
+        members = [m for m in tar.getmembers() if m.name.endswith(".csv") and m.isfile()]
+        print(f"Columnas de partición: ['nivel_educativo']  ({len(members)} archivos)")
+
+        for member in sorted(members, key=lambda m: m.name):
+            # Strip leading "{year}/" prefix, then parts[:-1] = partition values
+            rel_parts = Path(member.name.removeprefix(f"{year}/")).parts
+            nivel_educativo = rel_parts[0] if len(rel_parts) > 1 else ""
+
+            buf = io.BytesIO(tar.extractfile(member).read())
+            df = pl.read_csv(buf, infer_schema_length=0)
+            df = df.with_columns(pl.lit(nivel_educativo).alias("nivel_educativo"))
             df = df.with_columns(pl.col("FECHA_ALTA").str.to_date(format="%d/%m/%Y"))
             df = df.cast(schema)
 
-        table = df.to_arrow()
-        if writer is None:
-            writer = pq.ParquetWriter(str(output), table.schema)
-        writer.write_table(table)
+            table = df.to_arrow()
+            if writer is None:
+                writer = pq.ParquetWriter(str(output_path), table.schema)
+            writer.write_table(table)
 
-        total += len(df)
-        print(f"  {path.relative_to(root)}  ({len(df):,} filas)")
+            total += len(df)
+            print(f"  {member.name}  ({len(df):,} filas)")
 
-        del df, table  # libera memoria antes del siguiente archivo
+            del df, table, buf
 
     if writer:
         writer.close()
 
-    print(f"\nListo: {total:,} filas → {output}")
+    print(f"\nListo: {total:,} filas → {output_path}")
 
 
 if __name__ == "__main__":
