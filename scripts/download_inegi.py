@@ -59,9 +59,7 @@ def load_manifests(cngmd_dir: Path, filter_years: set[str] | None) -> dict[str, 
             root = ET.fromstring(z.read(xml_names[0]).decode("utf-8-sig"))
         urls = [a.text.strip() for a in root.iter("Archivo") if a.text]
         for url in urls:
-            year = year_from_url(url)
-            if year is None:
-                continue
+            year = year_from_url(url) or "_"
             if filter_years and year not in filter_years:
                 continue
             by_year.setdefault(year, []).append(url)
@@ -81,16 +79,18 @@ def download_year(
     grand_total: int,
 ) -> tuple[int, list[str]]:
     """Return (ok_count, errors). ok_offset/grand_total are for cross-year progress display."""
-    dest_dir = base_dir / year
+    no_year = year == "_"
+    dest_dir = base_dir if no_year else base_dir / year
     dest_dir.mkdir(parents=True, exist_ok=True)
     ok = 0
     errors: list[str] = []
     for url in urls:
         parts = url.split("/")
-        filename = f"{parts[-2]}_{parts[-1]}"
+        filename = parts[-1] if no_year else f"{parts[-2]}_{parts[-1]}"
+        label = filename if no_year else f"{year}/{filename}"
         dest = dest_dir / filename
         if dest.exists():
-            print(f"SKIP  {year}/{filename}")
+            print(f"SKIP  {label}")
             continue
         if dry_run:
             print(f"DRY   {url}")
@@ -99,18 +99,18 @@ def download_year(
             r = session.get(url, timeout=120)
             r.raise_for_status()
         except Exception as e:
-            msg = f"{year}/{filename}: {e}"
+            msg = f"{label}: {e}"
             print(f"ERROR {msg}")
             errors.append(msg)
             continue
         if not is_zip(r.content):
-            msg = f"{year}/{filename} (soft-404, {len(r.content)} bytes)"
+            msg = f"{label} (soft-404, {len(r.content)} bytes)"
             print(f"MISS  {msg}")
             errors.append(msg)
             continue
         dest.write_bytes(r.content)
         ok += 1
-        print(f"OK    {year}/{filename} ({len(r.content) // 1024:,} KB)  [{ok_offset + ok}/{grand_total}]")
+        print(f"OK    {label} ({len(r.content) // 1024:,} KB)  [{ok_offset + ok}/{grand_total}]")
         time.sleep(DELAY)
     return ok, errors
 
@@ -119,17 +119,19 @@ def check_downloads(base_dir: Path, by_year: dict[str, list[str]]) -> None:
     """Print which files are present/missing on disk."""
     total = missing = 0
     for year in sorted(by_year):
-        dest_dir = base_dir / year
+        no_year = year == "_"
+        dest_dir = base_dir if no_year else base_dir / year
+        year_label = "(no year)" if no_year else year
         year_missing = []
         for url in by_year[year]:
             parts = url.split("/")
-            filename = f"{parts[-2]}_{parts[-1]}"
+            filename = parts[-1] if no_year else f"{parts[-2]}_{parts[-1]}"
             total += 1
             if not (dest_dir / filename).exists():
                 missing += 1
                 year_missing.append(filename)
         status = "OK" if not year_missing else f"MISSING {len(year_missing)}"
-        print(f"\n--- {year} [{status}] ---")
+        print(f"\n--- {year_label} [{status}] ---")
         for name in year_missing:
             print(f"  MISSING  {year}/{name}")
     print(f"\n{total - missing}/{total} files present")
@@ -162,7 +164,8 @@ def main() -> None:
     all_errors: list[str] = []
     for year in sorted(by_year):
         urls = by_year[year]
-        print(f"\n--- {year} ({len(urls)} files) ---")
+        year_label = "(no year)" if year == "_" else year
+        print(f"\n--- {year_label} ({len(urls)} files) ---")
         ok, errors = download_year(session, base_dir, year, urls, args.dry_run, total_ok, grand_total)
         total_ok += ok
         all_errors.extend(errors)
