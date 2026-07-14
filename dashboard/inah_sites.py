@@ -8,7 +8,7 @@ import dash_bootstrap_components as dbc
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 df = (
-    pl.read_csv("data/inah_sitios.csv")
+    pl.read_csv("data/datamx/sitios_inah/inah_sitios.csv")
     .with_columns(pl.col("PERIODO").str.to_date("%Y-%m-%d"))
     .with_columns(
         pl.col("PERIODO").dt.year().alias("year"),

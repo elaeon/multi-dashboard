@@ -83,7 +83,7 @@ _muy_alto_2010 = int(
 )
 
 # ── Banxico — Remesas por entidad federativa ─────────────────────────────────
-_BNX_FILE = "data/banxico/Consulta_20260615-174730348.csv"
+_BNX_FILE = "data/banxico/remesas/Consulta_20260615-174730348.csv"
 
 def _load_banxico() -> pl.DataFrame:
     raw = pl.read_csv(_BNX_FILE, skip_rows=9, encoding="latin1")

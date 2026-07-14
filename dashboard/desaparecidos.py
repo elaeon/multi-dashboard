@@ -8,7 +8,7 @@ import dash_bootstrap_components as dbc
 # ── Data loading & cleaning ───────────────────────────────────────────────────
 
 _RAW = pl.read_csv(
-    "data/desaparecidos.csv",
+    "data/datamx/desaparecidos/desaparecidos.csv",
     null_values=["CONFIDENCIAL"],
     infer_schema_length=10000,
 )
