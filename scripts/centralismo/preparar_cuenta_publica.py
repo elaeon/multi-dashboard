@@ -1,7 +1,7 @@
 """
 Consolida los 15 xlsx de Cuenta Pública (2011-2025) en un parquet agregado:
 
-  data/presupuesto_federacion/cuenta_publica/cp_estado_ramo.parquet
+  informe_data/cp_estado_ramo.parquet
   grano: ciclo × id_ramo × cve_ent  (cve_ent 1-32; 33=extranjero, 34=no distribuible,
          0=sin geografía [2011]) con monto_aprobado y monto_ejercido.
 
@@ -18,7 +18,7 @@ import polars as pl
 
 RAIZ = Path(__file__).resolve().parents[2]
 DIR_CP = RAIZ / "data/presupuesto_federacion/cuenta_publica/cuenta_publica"
-SALIDA = RAIZ / "data/presupuesto_federacion/cuenta_publica/cp_estado_ramo.parquet"
+SALIDA = RAIZ / "informe_data/cp_estado_ramo.parquet"
 
 ARCHIVOS = {
     2011: "Cuenta_Publica_2011.xlsx",

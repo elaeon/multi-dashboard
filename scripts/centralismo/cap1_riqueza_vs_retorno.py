@@ -31,7 +31,7 @@ RAMOS_TRANSFER = [28, 33]  # participaciones + aportaciones federalizadas
 
 
 def cargar_transferencias() -> pl.DataFrame:
-    cp = pl.read_parquet(RAIZ / "data/presupuesto_federacion/cuenta_publica/cp_estado_ramo.parquet")
+    cp = pl.read_parquet(RAIZ / "informe_data/cp_estado_ramo.parquet")
     return (
         cp.filter(pl.col("id_ramo").is_in(RAMOS_TRANSFER) & pl.col("cve_ent").is_between(1, 32))
         .group_by("ciclo", "cve_ent")

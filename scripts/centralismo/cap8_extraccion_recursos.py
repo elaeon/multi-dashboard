@@ -134,7 +134,7 @@ def test_a_mineria():
     pib_min = leer_pibe(PIBE_MINERIA_NO_PETROLERA, bloque="Millones de pesos").rename({"valor": "pib_min"})
     pib = leer_pibe(PIBE_TOTAL, bloque="Millones de pesos").rename({"valor": "pib"})
     petro = leer_pibe(PIBE_MINERIA_PETROLERA, bloque="Millones de pesos").rename({"valor": "petro"})
-    cp = pl.read_parquet(RAIZ / "data/presupuesto_federacion/cuenta_publica/cp_estado_ramo.parquet")
+    cp = pl.read_parquet(RAIZ / "informe_data/cp_estado_ramo.parquet")
     tr = (cp.filter((pl.col("ciclo") == 2022) & pl.col("id_ramo").is_in([28, 33])
                     & pl.col("cve_ent").is_between(1, 32))
           .group_by("cve_ent").agg(pl.sum("monto_ejercido").alias("transfer")))

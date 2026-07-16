@@ -183,7 +183,7 @@ def main():
           ", ".join(f"{CORTO[r['cve_ent']]}={r['form_pc']:.1f}" for r in f25.tail(3).iter_rows(named=True)))
 
     # ---- E. crecimiento vs dependencia de transferencias (preview cap4/5)
-    cp = pl.read_parquet(RAIZ / "data/presupuesto_federacion/cuenta_publica/cp_estado_ramo.parquet")
+    cp = pl.read_parquet(RAIZ / "informe_data/cp_estado_ramo.parquet")
     tr = (cp.filter(pl.col("id_ramo").is_in([28, 33]) & pl.col("cve_ent").is_between(1, 32))
           .group_by("ciclo", "cve_ent").agg(pl.sum("monto_ejercido").alias("transfer")))
     pibn = leer_pibe(PIBE_TOTAL, bloque="Millones de pesos").rename({"valor": "pib_nom"})

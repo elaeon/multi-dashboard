@@ -167,7 +167,7 @@ def cargar_envipe() -> pl.DataFrame:
 
 # ---------------------------------------------------------------- PIBE
 
-DIR_PIBE = RAIZ / "data/inegi/pibe"
+DIR_PIBE = RAIZ / "data/inegi/pibe/tabulados"
 
 # tabulados clave (ver data/inegi/pibe/manifest.csv)
 PIBE_TOTAL = 2

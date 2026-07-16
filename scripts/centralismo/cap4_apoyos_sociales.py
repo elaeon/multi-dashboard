@@ -30,6 +30,7 @@ from comun import CORTO, RAIZ, cargar_pobreza, cargar_poblacion, guardar_fig
 DIR_CP = RAIZ / "data/presupuesto_federacion/cuenta_publica"
 DIR_RL = RAIZ / "data/presupuesto_federacion/recaudacion_local"
 DIR_POB = RAIZ / "data/presupuesto_federacion/poblaciones/atendidas"
+DIR_INFORME = RAIZ / "informe_data"
 
 
 def cargar_subsidios_estado(año: int) -> pl.DataFrame:
@@ -51,7 +52,7 @@ def cargar_subsidios_estado(año: int) -> pl.DataFrame:
 
 def test_a():
     print("=== A. Focalización y efecto sobre la pobreza ===")
-    cp = pl.read_parquet(DIR_CP / "cp_estado_ramo.parquet")
+    cp = pl.read_parquet(DIR_INFORME / "cp_estado_ramo.parquet")
     pob = cargar_poblacion()
     dep = cargar_pobreza()
 
@@ -115,7 +116,7 @@ def test_a():
 
 def test_b():
     print("\n=== B. Dependencia fiscal de los estados ===")
-    cp = pl.read_parquet(DIR_CP / "cp_estado_ramo.parquet")
+    cp = pl.read_parquet(DIR_INFORME / "cp_estado_ramo.parquet")
     tr = (cp.filter(pl.col("id_ramo").is_in([28, 33]) & pl.col("cve_ent").is_between(1, 32))
           .group_by("ciclo", "cve_ent").agg(pl.sum("monto_ejercido").alias("transfer"))
           .rename({"ciclo": "año"}))

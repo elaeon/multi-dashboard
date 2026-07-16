@@ -80,7 +80,7 @@ def correlatos() -> pl.DataFrame:
             .with_columns((pl.col("puestos") / pl.col("pob_total") * 100).alias("formalizacion")))
 
     # dependencia fiscal (Cap 4) y razón retorno/aporte (Cap 1), 2022
-    cp = pl.read_parquet(RAIZ / "data/presupuesto_federacion/cuenta_publica/cp_estado_ramo.parquet")
+    cp = pl.read_parquet(RAIZ / "informe_data/cp_estado_ramo.parquet")
     tr = (cp.filter(pl.col("id_ramo").is_in([28, 33]) & pl.col("cve_ent").is_between(1, 32)
                     & pl.col("ciclo").is_between(2017, 2024))
           .group_by("cve_ent").agg(pl.sum("monto_ejercido").alias("transfer")))

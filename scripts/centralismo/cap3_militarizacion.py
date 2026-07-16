@@ -43,7 +43,7 @@ C_MONTO = "Monto total o beneficio, servicio y/o recurso público aprovechado"
 
 
 def gasto_militar():
-    cp = pl.read_parquet(RAIZ / "data/presupuesto_federacion/cuenta_publica/cp_estado_ramo.parquet")
+    cp = pl.read_parquet(RAIZ / "informe_data/cp_estado_ramo.parquet")
     nac = cp.group_by("ciclo", "id_ramo").agg(
         pl.sum("monto_aprobado").alias("aprobado"), pl.sum("monto_ejercido").alias("ejercido"))
     nac = nac.filter(pl.col("ciclo") >= 2016)  # alcance homogéneo gf_ecd_epe
