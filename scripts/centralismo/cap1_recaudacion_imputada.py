@@ -50,12 +50,12 @@ def cargar_transferencias() -> pl.DataFrame:
 def cargar_aporte_imputado() -> pl.DataFrame:
     """Share estatal de la recaudación tributaria federal imputada (2018-2024)."""
     rec = pl.read_parquet(RAIZ / "informe_data/recaudacion_imputada_estatal.parquet")
-    rec = rec.filter(pl.col("monto_imputado_miles_pesos").is_not_null()).with_columns(
+    rec = rec.filter(pl.col("monto_imputado_millones_pesos").is_not_null()).with_columns(
         pl.col("cve_ent").cast(pl.Int64)
     )
     agg = (
         rec.group_by("anio", "cve_ent")
-        .agg(pl.sum("monto_imputado_miles_pesos").alias("recaudacion"))
+        .agg(pl.sum("monto_imputado_millones_pesos").alias("recaudacion"))
         .with_columns(
             (pl.col("recaudacion") / pl.col("recaudacion").sum().over("anio")).alias("share_recaudacion")
         )

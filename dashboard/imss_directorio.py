@@ -133,7 +133,7 @@ _CONAPO_TO_GEO = {
     "Veracruz de Ignacio de la Llave": "Veracruz",
 }
 pop_by_state = (
-    pl.scan_csv("data/conapo/estados_municipios.csv")
+    pl.scan_parquet("dashboard_data/conapo_pob_municipal.parquet")
     .filter(pl.col("AÑO") == 2024)
     .group_by("NOM_ENT")
     .agg(pl.col("POB_TOTAL").sum().alias("pop"))
@@ -145,7 +145,7 @@ pop_by_state = (
 )
 
 pop_by_state_2025 = (
-    pl.scan_csv("data/conapo/estados_municipios.csv")
+    pl.scan_parquet("dashboard_data/conapo_pob_municipal.parquet")
     .filter(pl.col("AÑO") == 2025)
     .group_by("NOM_ENT")
     .agg(pl.col("POB_TOTAL").sum().alias("pop"))

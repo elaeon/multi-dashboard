@@ -15,7 +15,7 @@ PROPIAS de los gobiernos estatales, un universo distinto).
 
 Salida: informe_data/recaudacion_imputada_estatal.parquet
   grano: anio x cve_ent x concepto
-  columnas: participacion_pct (siempre), monto_imputado_miles_pesos (solo
+  columnas: participacion_pct (siempre), monto_imputado_millones_pesos (solo
   donde hay total nacional confiable: todos los tributarios; null para
   IMSS/INFONAVIT/ISSSTE por falta de un total nacional de cuotas confiable
   en los datos locales).
@@ -110,7 +110,15 @@ def normalizar(df: pl.DataFrame, col: str) -> pl.DataFrame:
 # --------------------------------------------------------------- totales nacionales
 
 def cargar_totales_nacionales() -> pl.DataFrame:
-    """SAT Ingresos Tributarios (nacional, mensual) -> anual, por concepto."""
+    """SAT Ingresos Tributarios (nacional, mensual) -> anual, por concepto.
+
+    Unidades: MILLONES de pesos (verificado contra magnitudes SHCP conocidas —
+    ISR nacional 2024 ≈ $2.68 billones de pesos, IVA ≈ $1.41 billones; con
+    'miles' el total nacional daría ~1000x menos, del orden de unos pocos miles
+    de millones de pesos, incompatible con los ingresos tributarios federales
+    reales de México). No confundir con la columna homónima "miles" del
+    Ríos & Saucedo (2025) original -- aquí se nombra por su unidad real.
+    """
     df = pd.read_csv(RAIZ / "data/sat/recaudacion_federal/ingresostributarios.csv",
                       encoding="latin-1")
     df = df.rename(columns={df.columns[0]: "ejercicio"})
@@ -139,7 +147,7 @@ def cargar_totales_nacionales() -> pl.DataFrame:
                       float(r["impuesto_porlaactividadde_exploracionyextraccion_dehidrocarburos"])))
         filas.append((anio, "accesorios_otros", float(r["otros_ingresos_tributarios"])))
 
-    out = pl.DataFrame(filas, schema=["anio", "concepto", "monto_nacional_miles"],
+    out = pl.DataFrame(filas, schema=["anio", "concepto", "monto_nacional_millones"],
                         orient="row")
     print(f"[nacional] SAT ingresos tributarios cargados {ANIOS[0]}-{ANIOS[-1]}")
     return out
@@ -327,7 +335,7 @@ def construir_anio(anio: int, nacional: pl.DataFrame) -> pl.DataFrame:
 
     def monto(concepto: str) -> float:
         row = nacional.filter((pl.col("anio") == anio) & (pl.col("concepto") == concepto))
-        return float(row["monto_nacional_miles"][0]) if row.height else 0.0
+        return float(row["monto_nacional_millones"][0]) if row.height else 0.0
 
     partes = []
 
@@ -365,7 +373,7 @@ def construir_anio(anio: int, nacional: pl.DataFrame) -> pl.DataFrame:
                  .with_columns((pl.col("monto") / isr_total * 100).alias("participacion_pct"))
                  .with_columns(pl.lit(anio).alias("anio"), pl.lit("isr").alias("concepto"))
                  .select("anio", "concepto", "cve_ent", "participacion_pct",
-                         pl.col("monto").alias("monto_imputado_miles_pesos")))
+                         pl.col("monto").alias("monto_imputado_millones_pesos")))
     partes.append(isr_final)
 
     # --- conceptos simples: (peso, columna, nacional-conocido)
@@ -385,8 +393,8 @@ def construir_anio(anio: int, nacional: pl.DataFrame) -> pl.DataFrame:
         partes.append(
             pct.with_columns(
                 pl.lit(anio).alias("anio"), pl.lit(concepto).alias("concepto"),
-                (pl.col("participacion_pct") / 100 * monto_nal).alias("monto_imputado_miles_pesos"),
-            ).select("anio", "concepto", "cve_ent", "participacion_pct", "monto_imputado_miles_pesos")
+                (pl.col("participacion_pct") / 100 * monto_nal).alias("monto_imputado_millones_pesos"),
+            ).select("anio", "concepto", "cve_ent", "participacion_pct", "monto_imputado_millones_pesos")
         )
 
     # --- cuotas de seguridad social: solo participación %, sin total nacional confiable local
@@ -397,8 +405,8 @@ def construir_anio(anio: int, nacional: pl.DataFrame) -> pl.DataFrame:
         partes.append(
             pct.with_columns(
                 pl.lit(anio).alias("anio"), pl.lit(concepto).alias("concepto"),
-                pl.lit(None, dtype=pl.Float64).alias("monto_imputado_miles_pesos"),
-            ).select("anio", "concepto", "cve_ent", "participacion_pct", "monto_imputado_miles_pesos")
+                pl.lit(None, dtype=pl.Float64).alias("monto_imputado_millones_pesos"),
+            ).select("anio", "concepto", "cve_ent", "participacion_pct", "monto_imputado_millones_pesos")
         )
 
     return pl.concat(partes)
@@ -420,9 +428,9 @@ def main():
         for concepto in tributarios:
             suma_estados = resultado.filter(
                 (pl.col("anio") == anio) & (pl.col("concepto") == concepto)
-            )["monto_imputado_miles_pesos"].sum()
+            )["monto_imputado_millones_pesos"].sum()
             fila = nacional.filter((pl.col("anio") == anio) & (pl.col("concepto") == concepto))
-            nal = float(fila["monto_nacional_miles"][0]) if fila.height else 0.0
+            nal = float(fila["monto_nacional_millones"][0]) if fila.height else 0.0
             if nal:
                 assert abs(suma_estados / nal - 1) < 0.01, (anio, concepto, suma_estados, nal)
 
