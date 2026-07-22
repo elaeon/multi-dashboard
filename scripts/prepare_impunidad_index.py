@@ -19,6 +19,14 @@ Todas las tablas se localizan vía 0_indice/diccionario_de_datos por texto,
 nunca por código de tabla o columna hardcodeado (el código cambia cada año
 en las cuatro fuentes) — ver docstrings de cada `cargar_*`.
 
+Columnas de contexto (fuera del índice compuesto, no afectan el score):
+desconfianza institucional percibida (ENVIPE, "algo/mucha desconfianza" en
+Policía Estatal, Jueces y Ministerio Público/Fiscalías Estatales, ponderado
+por FAC_ELE). Se dejan separadas del índice porque son datos de encuesta
+(con margen muestral) mientras los 4 pilares son datos administrativos
+(censos) — mezclarlos en un solo score combinaría dos tipos de error
+distintos. Ver `cargar_envipe_desconfianza()`.
+
 Capa municipal (2 tablas SEPARADAS, NO fusionadas al índice estatal, cada
 una un corte transversal único, no una serie):
   - Policía municipal (CNGMD, edición 2025 / dato 2024).
@@ -70,6 +78,10 @@ def _leer_miembro(z: zipfile.ZipFile, nombre_original: str, **kw) -> pd.DataFram
         texto = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         texto = raw.decode("latin-1")
+    # Algunas ediciones de ENVIPE (2020-2021) usan '\r' puro como terminador de
+    # línea (estilo Mac clásico, sin '\n'); io.StringIO no lo traduce por
+    # defecto y el '\r' queda pegado al último campo de cada fila.
+    texto = texto.replace("\r\n", "\n").replace("\r", "\n")
     return _limpiar_cols(pd.read_csv(io.StringIO(texto), **kw))
 
 
@@ -206,6 +218,89 @@ def cargar_cnsipee(anio_dato: int) -> pl.DataFrame:
     }).with_columns(pl.lit(anio_dato).alias("anio"))
 
 
+# ---------------------------------------------------------------- contexto: ENVIPE
+
+def _zip_envipe(anio: int) -> Path:
+    candidatos = [p for p in (RAIZ / "data/inegi/envipe").glob("*.zip")
+                  if re.search(rf"envipe_?{anio}", p.name, re.IGNORECASE)]
+    return candidatos[0]
+
+
+def _miembro_tper_vic1(z: zipfile.ZipFile, carpeta: str) -> str:
+    """`carpeta`: 'conjunto_de_datos' o 'diccionario_de_datos' — el nombre de
+    la carpeta raíz de la tabla cambia de capitalización cada año
+    (tper_vic1_envipe2024/, conjunto_de_datos_TPer_Vic1_ENVIPE_2020/, ...),
+    por eso se resuelve por substring de ruta con delimitadores de carpeta."""
+    return next(e for e in z.namelist()
+                if "tper_vic1" in e.lower() and f"/{carpeta}/" in e.lower() and e.endswith(".csv"))
+
+
+def cargar_envipe_desconfianza(anio: int) -> pl.DataFrame:
+    """cve_ent × tasa_desconfianza_policia/jueces/mp — % de respuestas "algo/
+    mucha desconfianza" (códigos 3-4 de la escala AP5_4, 1-4) sobre
+    respuestas válidas (excluye sentinela 9 "no sabe/no responde"), ponderado
+    por FAC_ELE, entre entrevistas completas (RESUL_H == 'A').
+
+    anio_envipe == anio, SIN desfase de un año (a diferencia de CNPJE/CNDHE/
+    CNSIPEE): ENVIPE es una encuesta de percepción fielded a mitad del año de
+    publicación, mide la confianza AL MOMENTO de la encuesta, no la de un año
+    anterior como las tres fuentes censales.
+
+    El código de columna AP5_4_NN se reasigna a una institución DISTINTA cada
+    año (verificado: Jueces es AP5_4_11 en 2020 pero AP5_4_10 en 2021-2024;
+    el texto de MP/Fiscalías Estatales también cambia de "MP, Procuradurías"
+    a "Ministerio Público (MP) y Fiscalías Estatales" en 2022) — se resuelve
+    siempre por texto en diccionario_de_datos, nunca por código ni posición.
+    """
+    zpath = _zip_envipe(anio)
+    with zipfile.ZipFile(zpath) as z:
+        dic = _leer_miembro(z, _miembro_tper_vic1(z, "diccionario_de_datos"))
+        nemonico = dic["NEMONICO"].astype(str).str.strip()
+        # Restringir al bloque AP5_4 ("Confianza en..."): AP5_3 ("Identifica a...")
+        # y AP5_6 ("Percepción sobre desempeño de...") repiten los mismos nombres
+        # de institución y darían falsos positivos si se buscara solo por texto.
+        dic = dic[nemonico.str.match(r"^AP5_4_\d+$", na=False)]
+        nombre = dic["NOMBRE_CAMPO"].astype(str).str.lower()
+
+        pol_col = dic[nombre.str.contains("policía estatal", na=False)]["NEMONICO"].iloc[0]
+        jue_col = dic[nombre.str.contains("jueces", na=False)]["NEMONICO"].iloc[0]
+        mp_col = dic[(nombre.str.contains("procuradur", na=False) | nombre.str.contains("fiscal", na=False))
+                     & ~nombre.str.contains("general de la rep", na=False)]["NEMONICO"].iloc[0]
+
+        cols = ["CVE_ENT", "RESUL_H", "FAC_ELE", pol_col, jue_col, mp_col]
+        data = _leer_miembro(z, _miembro_tper_vic1(z, "conjunto_de_datos"), usecols=cols)
+
+    # Ediciones 2020-2021: cada valor de campo trae un '\n' pegado como parte
+    # del contenido citado (p. ej. RESUL_H llega como "A\n") — artefacto del
+    # export original, no un problema de delimitador de fila (las filas y
+    # columnas ya se parsean bien). Sin este strip, '=="A"' y el cast numérico
+    # de las columnas AP5_4 fallan en silencio (todo termina en NaN).
+    for col in cols:
+        if data[col].dtype == object or str(data[col].dtype).startswith("str"):
+            data[col] = data[col].str.strip()
+
+    data = data[data["RESUL_H"] == "A"].copy()
+    data["FAC_ELE"] = pd.to_numeric(data["FAC_ELE"], errors="coerce")
+    data["CVE_ENT"] = pd.to_numeric(data["CVE_ENT"], errors="coerce")
+    for col in (pol_col, jue_col, mp_col):
+        data[col] = pd.to_numeric(data[col], errors="coerce")
+
+    resultado = pl.DataFrame({"cve_ent": list(range(1, 33))})
+    for col, salida in [(pol_col, "tasa_desconfianza_policia"),
+                         (jue_col, "tasa_desconfianza_jueces"),
+                         (mp_col, "tasa_desconfianza_mp")]:
+        d = data[data[col].isin([1, 2, 3, 4])].copy()
+        d["ponderada"] = d[col].isin([3, 4]).astype(float) * d["FAC_ELE"]
+        num = d.groupby("CVE_ENT")["ponderada"].sum()
+        den = d.groupby("CVE_ENT")["FAC_ELE"].sum()
+        tasa = num / den
+        tabla = pl.DataFrame({"cve_ent": [int(v) for v in tasa.index], salida: tasa.to_list()},
+                              schema={"cve_ent": pl.Int64, salida: pl.Float64})
+        resultado = resultado.join(tabla, on="cve_ent", how="left")
+
+    return resultado.with_columns(pl.lit(anio).alias("anio"))
+
+
 # ---------------------------------------------------------------- índice estatal
 
 def construir_indice_estatal() -> pl.DataFrame:
@@ -217,10 +312,12 @@ def construir_indice_estatal() -> pl.DataFrame:
     cnpje = pl.concat([cargar_cnpje(a) for a in range(ANIO_MIN, ANIO_MAX + 1)])
     cndhe = pl.concat([cargar_cndhe(a) for a in range(ANIO_MIN, ANIO_MAX + 1)])
     cnsipee = pl.concat([cargar_cnsipee(a) for a in range(ANIO_MIN, ANIO_MAX + 1)])
+    envipe = pl.concat([cargar_envipe_desconfianza(a) for a in range(ANIO_MIN, ANIO_MAX + 1)])
 
     df = (fuerza.join(cnpje, on=["cve_ent", "anio"], how="inner")
           .join(cndhe, on=["cve_ent", "anio"], how="inner")
           .join(cnsipee, on=["cve_ent", "anio"], how="inner")
+          .join(envipe, on=["cve_ent", "anio"], how="left")
           .with_columns(pl.col("cve_ent").replace_strict({k: v[0] for k, v in ESTADOS.items()})
                         .alias("entidad")))
 
@@ -243,6 +340,7 @@ def construir_indice_estatal() -> pl.DataFrame:
         "cve_ent", "entidad", "anio", "capacidad_policial_pc", "tasa_judicializacion",
         "tasa_recomendacion", "pct_sin_sentencia", "pct_capacidad", "pct_judicializacion",
         "pct_ddhh", "pct_prision_preventiva", "indice_impunidad", "nivel",
+        "tasa_desconfianza_policia", "tasa_desconfianza_jueces", "tasa_desconfianza_mp",
     ).sort(["anio", "indice_impunidad"], descending=[False, True])
 
 
@@ -318,6 +416,16 @@ def validar(indice: pl.DataFrame) -> None:
     print(f"\nTop 10 estados con menor impunidad ({ultimo}):")
     print(d.tail(10).select("entidad", "capacidad_policial_pc", "tasa_judicializacion",
                              "tasa_recomendacion", "pct_sin_sentencia", "indice_impunidad", "nivel"))
+
+    print("\nDesconfianza institucional (ENVIPE, contexto — no forma parte del índice):")
+    print("correlación (Pearson) entre indice_impunidad y cada tasa_desconfianza_*, por año")
+    print("(se espera signo positivo: más impunidad administrativa <-> más desconfianza")
+    print("ciudadana; no se exige un umbral, solo revisar que el signo sea razonable):")
+    for col in ("tasa_desconfianza_policia", "tasa_desconfianza_jueces", "tasa_desconfianza_mp"):
+        for anio in range(ANIO_MIN, ANIO_MAX + 1):
+            sub = indice.filter(pl.col("anio") == anio)
+            corr = sub.select(pl.corr("indice_impunidad", col)).item()
+            print(f"  {col} {anio}: r = {corr:.3f}" if corr is not None else f"  {col} {anio}: sin datos")
 
 
 def main():
