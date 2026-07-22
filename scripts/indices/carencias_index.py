@@ -27,8 +27,8 @@ construcción" (los pesos de reparto son consumo/ingreso ENIGH y factores del Ce
 Económico), pero no es una medición de PIB. Se incluye con nombres honestos
 (recaudacion_imputada_pc, share_recaudacion_imputada), no como PIB.
 
-Run: uv run python scripts/carencias_pib_2024.py
-       uv run python scripts/carencias_pib_2024.py --indice   # vista condensada
+Run: uv run python scripts/indices/carencias_index.py
+       uv run python scripts/indices/carencias_index.py --indice   # vista condensada
 """
 
 import argparse
@@ -40,11 +40,14 @@ from pathlib import Path
 import pandas as pd
 import polars as pl
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "centralismo"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "centralismo"))
 from comun import RAIZ, NOMBRE, PIBE_TOTAL, cargar_pobreza, cargar_poblacion, leer_pibe  # noqa: E402
 from cap1_recaudacion_imputada import cargar_aporte_imputado, cargar_transferencias  # noqa: E402
 
 ZIPS_ENIGH = {
+    2016: "conjunto_de_datos_enigh2016_nueva_serie_csv.zip",
+    2018: "conjunto_de_datos_enigh_2018_ns_csv.zip",
+    2020: "conjunto_de_datos_enigh_ns_2020_csv.zip",
     2022: "conjunto_de_datos_enigh_ns_2022_csv.zip",
     2024: "conjunto_de_datos_enigh2024_ns_csv.zip",
 }
@@ -165,11 +168,14 @@ def rezago_educativo(año: int) -> pl.DataFrame:
 # ---------------------------------------------------------------- 2/3. salud, seg. social (proxy)
 
 def acceso_salud(año: int) -> pl.DataFrame:
-    """Proxy 'sin afiliación', sin propagación por parentesco (ver docstring del módulo)."""
-    extra = "pop_insabi" if año <= 2022 else "inst_9"
+    """Proxy 'sin afiliación', sin propagación por parentesco (ver docstring del
+    módulo). La variable de afiliación cambia de nombre por ola: segpop (Seguro
+    Popular, 2016/2018), pop_insabi (INSABI, 2020/2022) e inst_9 (IMSS-Bienestar
+    multiselect, 2024). Misma lógica que cap4_h4_fuera_muestra.py:carencia_salud."""
+    extra = "segpop" if año <= 2018 else "pop_insabi" if año <= 2022 else "inst_9"
     p = leer_tabla(año, "poblacion", ["folioviv", "foliohog", "numren", "atemed", extra])
     if año <= 2022:
-        ic = pl.when((pl.col("pop_insabi").str.strip_chars() != "1") &
+        ic = pl.when((pl.col(extra).str.strip_chars() != "1") &
                       (pl.col("atemed").str.strip_chars() != "1")).then(1).otherwise(0)
     else:
         ic = pl.when(pl.col("inst_9").str.strip_chars() == "9").then(1).otherwise(0)
@@ -219,8 +225,11 @@ def calidad_vivienda(año: int) -> pl.DataFrame:
 
 def servicios_vivienda(año: int) -> pl.DataFrame:
     if año <= 2022:
-        cols_v = ["folioviv", "procaptar", "disp_agua", "drenaje", "disp_elect",
+        cols_v = ["folioviv", "disp_agua", "drenaje", "disp_elect",
                   "combustible", "estufa_chi"]
+        # procaptar (captación de lluvia) no existe en 2016; sí en 2018/2020/2022
+        if año != 2016:
+            cols_v.insert(1, "procaptar")
     else:
         cols_v = ["folioviv", "agua_ent", "drenaje", "disp_elect", "combus", "fogon_chi"]
     v = leer_tabla(año, "viviendas", cols_v)
@@ -229,12 +238,20 @@ def servicios_vivienda(año: int) -> pl.DataFrame:
     sbv = c.join(v, on="folioviv", how="left")
 
     if año <= 2022:
-        isb_agua = (
-            pl.when((pl.col("procaptar") == 1) & (pl.col("disp_agua") == 4)).then(0)
-            .when(pl.col("disp_agua") >= 3).then(1)
-            .when(pl.col("disp_agua") <= 2).then(0)
-            .otherwise(None)
-        )
+        if año == 2016:
+            # 2016 no trae procaptar: sin la excepción de captación de lluvia
+            isb_agua = (
+                pl.when(pl.col("disp_agua") >= 3).then(1)
+                .when(pl.col("disp_agua") <= 2).then(0)
+                .otherwise(None)
+            )
+        else:
+            isb_agua = (
+                pl.when((pl.col("procaptar") == 1) & (pl.col("disp_agua") == 4)).then(0)
+                .when(pl.col("disp_agua") >= 3).then(1)
+                .when(pl.col("disp_agua") <= 2).then(0)
+                .otherwise(None)
+            )
         isb_combus = (
             pl.when(pl.col("combustible").is_in([1, 2]) & (pl.col("estufa_chi") == 2)).then(1)
             .when(pl.col("combustible").is_in([1, 2]) & (pl.col("estufa_chi") == 1)).then(0)
@@ -366,22 +383,46 @@ def alimentacion(año: int) -> pl.DataFrame:
 
 # ---------------------------------------------------------------- ensamblado y agregación
 
+def _ki(df: pl.DataFrame) -> pl.DataFrame:
+    """Normaliza las llaves de join a Int64. En 2016/2018 `folioviv` pierde los
+    ceros a la izquierda en poblacion/hogares pero no en concentradohogar/
+    viviendas (match string 68%, Int64 100%); castear a entero une bien todas
+    las olas."""
+    keys = [pl.col(k).cast(pl.Int64, strict=False) for k in ("folioviv", "foliohog")
+            if k in df.columns]
+    return df.with_columns(keys)
+
+
 def poblacion_base(año: int) -> pl.DataFrame:
-    p = leer_tabla(año, "poblacion", ["folioviv", "foliohog", "numren", "parentesco", "entidad", "factor"])
-    p = p.with_columns(
-        pl.col("parentesco").cast(pl.Float64, strict=False),
-        pl.col("factor").cast(pl.Float64, strict=False),
-        pl.col("entidad").cast(pl.Int64, strict=False).alias("cve_ent"),
-    )
+    if año <= 2020:
+        # poblacion no trae entidad ni factor en 2016/2018/2020: se toman de
+        # concentradohogar (cve_ent = 2 primeros dígitos de ubica_geo).
+        p = leer_tabla(año, "poblacion", ["folioviv", "foliohog", "numren", "parentesco"])
+        p = _ki(p).with_columns(pl.col("parentesco").cast(pl.Float64, strict=False))
+        con = _ki(leer_tabla(año, "concentradohogar",
+                             ["folioviv", "foliohog", "ubica_geo", "factor"]))
+        con = con.with_columns(
+            pl.col("factor").cast(pl.Float64, strict=False),
+            pl.col("ubica_geo").str.slice(0, 2).cast(pl.Int64).alias("cve_ent"),
+        ).select("folioviv", "foliohog", "cve_ent", "factor")
+        p = p.join(con, on=["folioviv", "foliohog"], how="left")
+    else:
+        p = leer_tabla(año, "poblacion",
+                       ["folioviv", "foliohog", "numren", "parentesco", "entidad", "factor"])
+        p = _ki(p).with_columns(
+            pl.col("parentesco").cast(pl.Float64, strict=False),
+            pl.col("factor").cast(pl.Float64, strict=False),
+            pl.col("entidad").cast(pl.Int64, strict=False).alias("cve_ent"),
+        )
     p = excluir_huespedes(p)
 
     base = (
-        p.join(rezago_educativo(año), on=["folioviv", "foliohog", "numren"], how="left")
-         .join(acceso_salud(año), on=["folioviv", "foliohog", "numren"], how="left")
-         .join(seguridad_social(año), on=["folioviv", "foliohog", "numren"], how="left")
-         .join(calidad_vivienda(año), on=["folioviv", "foliohog"], how="left")
-         .join(servicios_vivienda(año), on=["folioviv", "foliohog"], how="left")
-         .join(alimentacion(año), on=["folioviv", "foliohog"], how="left")
+        p.join(_ki(rezago_educativo(año)), on=["folioviv", "foliohog", "numren"], how="left")
+         .join(_ki(acceso_salud(año)), on=["folioviv", "foliohog", "numren"], how="left")
+         .join(_ki(seguridad_social(año)), on=["folioviv", "foliohog", "numren"], how="left")
+         .join(_ki(calidad_vivienda(año)), on=["folioviv", "foliohog"], how="left")
+         .join(_ki(servicios_vivienda(año)), on=["folioviv", "foliohog"], how="left")
+         .join(_ki(alimentacion(año)), on=["folioviv", "foliohog"], how="left")
     )
     return base.with_columns(
         (pl.col("ic_rezedu") + pl.col("ic_asalud") + pl.col("ic_segsoc") +
@@ -410,18 +451,22 @@ def agregar_estado(base: pl.DataFrame, año: int) -> pl.DataFrame:
     return out.sort("cve_ent")
 
 
-def validar_2022(recon: pl.DataFrame) -> None:
-    oficial = cargar_pobreza().filter(pl.col("año") == 2022)
+def validar_reconstruccion(recon: pl.DataFrame, año: int) -> None:
+    """Compara la reconstrucción de una ola contra el panel CONEVAL oficial
+    (cargar_pobreza cubre 2016/2018/2020/2022). Las 4 carencias exactas se
+    bloquean si el error medio supera 2pp; los 2 proxies (salud, seg. social)
+    sólo reportan su sesgo."""
+    oficial = cargar_pobreza().filter(pl.col("año") == año)
     comp = recon.join(oficial, on="cve_ent", suffix="_oficial")
 
-    print("\n=== Validación 2022: reconstrucción vs. CONEVAL oficial ===")
+    print(f"\n=== Validación {año}: reconstrucción vs. CONEVAL oficial ===")
     exactas = [("pct_ic_rezedu", "rezago educativo"), ("pct_ic_cv", "calidad vivienda"),
                ("pct_ic_sbv", "servicios básicos"), ("pct_ic_ali", "alimentación")]
     for col, nombre in exactas:
         err = (pl.col(col) - pl.col(f"{col}_oficial")).abs()
         e = comp.select(err.mean().alias("m"), err.max().alias("x")).row(0, named=True)
         print(f"  {nombre:20s}: error abs medio {e['m']:.2f}pp (máx {e['x']:.2f}pp)")
-        assert e["m"] < 2.0, f"{nombre}: error medio {e['m']:.2f}pp supera el umbral de 2pp"
+        assert e["m"] < 2.0, f"{año} {nombre}: error medio {e['m']:.2f}pp supera el umbral de 2pp"
 
     proxies = [("pct_ic_asalud", "salud (proxy)"), ("pct_ic_segsoc", "seg. social (proxy)")]
     for col, nombre in proxies:
@@ -429,7 +474,7 @@ def validar_2022(recon: pl.DataFrame) -> None:
         s = comp.select(sesgo.mean().alias("m"), sesgo.min().alias("lo"), sesgo.max().alias("hi")).row(0, named=True)
         print(f"  {nombre:20s}: sesgo nacional medio {s['m']:+.2f}pp "
               f"(rango {s['lo']:+.2f} a {s['hi']:+.2f}pp) — proxy, no bloquea")
-    print("  → gate de validación OK, 2024 se calcula con la misma metodología")
+    print(f"  → gate de validación {año} OK")
 
 
 def tabla_resumen(ancho: pl.DataFrame) -> pl.DataFrame:
@@ -526,7 +571,7 @@ def main() -> None:
 
     print("=== 1/6 Reconstrucción 2022 y validación contra CONEVAL oficial ===")
     car22 = agregar_estado(poblacion_base(2022), 2022)
-    validar_2022(car22)
+    validar_reconstruccion(car22, 2022)
 
     print("\n=== 2/6 Reconstrucción 2024 (ENIGH cruda) ===")
     car24 = agregar_estado(poblacion_base(2024), 2024)

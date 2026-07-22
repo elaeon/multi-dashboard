@@ -35,7 +35,7 @@ una un corte transversal único, no una serie):
 No es un dato de dashboard: la carpeta de salida se especifica por línea de
 comandos.
 
-Run: uv run python scripts/prepare_impunidad_index.py --output-dir <ruta>
+Run: uv run python scripts/indices/prepare_impunidad_index.py --output-dir <ruta>
 """
 import argparse
 import glob
@@ -48,7 +48,7 @@ from pathlib import Path
 import polars as pl
 import pandas as pd
 
-RAIZ = Path(__file__).resolve().parent.parent
+RAIZ = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(RAIZ / "scripts/centralismo"))
 from comun import ESTADOS, cargar_poblacion          # noqa: E402
 from cap12_capacidad_policial import fuerza_estatal, leer_zip_csv  # noqa: E402

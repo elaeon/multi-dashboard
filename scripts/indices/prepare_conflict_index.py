@@ -23,7 +23,7 @@ es comparable con años posteriores a 2018).
 Este índice no es un dato de dashboard (no alimenta ninguna página de
 dashboard/): la carpeta de salida se especifica por línea de comandos.
 
-Run: uv run python scripts/prepare_conflict_index.py --output-dir <ruta>
+Run: uv run python scripts/indices/prepare_conflict_index.py --output-dir <ruta>
 """
 import argparse
 import io
@@ -32,7 +32,7 @@ from pathlib import Path
 
 import polars as pl
 
-RAIZ = Path(__file__).resolve().parent.parent
+RAIZ = Path(__file__).resolve().parent.parent.parent
 
 INCIDENCIA = (RAIZ / "data/incidencia_delictiva/incidencia_fuero_comun/"
               "incidencia_delictiva_fuero_comun.parquet")
