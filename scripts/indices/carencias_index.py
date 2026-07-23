@@ -16,8 +16,28 @@ las tablas trabajos/ingresos completas) — se aplica el MISMO proxy en 2022 y 2
 para que ambos años sean comparables entre sí, y el sesgo frente al valor oficial de
 CONEVAL 2022 se mide explícitamente en el gate de validación antes de confiar en 2024.
 
+Rediseño según AUDITORIA.md §3 (panel 2016–2024, mismo estándar que impunidad/
+conflicto):
+  • Panel completo de 5 olas ENIGH (2016/2018/2020/2022/2024) para trayectoria, no
+    2 puntos (§3.3). Cada ola con oficial (2016–2022) pasa la puerta de validación
+    de 2pp; 2024 queda reconstrucción-sólo.
+  • IC 95% por bootstrap estratificado por UPM (diseño muestral ENIGH, upm/est_dis),
+    para cada tasa y compuesto (§3.5) — espejo de prepare_impunidad_index.
+  • Ruptura INSABI→IMSS-Bienestar (§3.2): el pilar salud 2024 (inst_9) NO es
+    comparable con 2016–2022 (segpop/pop_insabi); se marca (salud_no_comparable) y se
+    reporta un promedio_carencias_sin_salud comparable en el tiempo, además del de 6.
+  • Sesgo POR ESTADO del proxy salud/segsoc (§3.1): se mide su estabilidad 2016–2022
+    y se arrastra (sesgo_*_2022) como banda de incertidumbre a 2024.
+  • Ingreso de hogar per cápita ENIGH (§3.7) junto al PIBpc, mejor proxy de bienestar
+    del residente (el PIBpc se infla con el PIB petrolero en Campeche/Tabasco).
+
+Salida: panel largo con IC en /tmp/carencias_panel_estatal.parquet (deliverable de
+trayectoria); vista ancha 2022/2024 en /tmp/carencias_pib_2024.csv (compatibilidad).
+
 Alcance: NO se calcula pct_pobreza (pobreza multidimensional por ingreso) para 2024 —
 requeriría reconstruir las líneas de pobreza LPI/LPEI de CONEVAL, fuera de alcance.
+Informalidad laboral queda sólo en 2022/2024 (la ENOE cambia de nombre/variante por
+trimestre en 2016/2018/2020, con Q2-2020 suspendido por COVID) y es decorativa (§3.8).
 
 También agrega recaudación fiscal federal imputada por estado (metodología Ríos &
 Saucedo 2025, informe_data/recaudacion_imputada_estatal.parquet). OJO: esto NO es
@@ -37,6 +57,7 @@ import sys
 import zipfile
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import polars as pl
 
@@ -56,6 +77,22 @@ ZIPS_ENIGH = {
 # cambia entre variantes.
 ENOE_VARIANTE = {2022: "enoen", 2024: "enoe"}
 SALIDA = Path("/tmp/carencias_pib_2024.csv")
+PANEL = Path("/tmp/carencias_panel_estatal.parquet")
+
+# Panel completo de olas ENIGH (§3.3): trayectoria 2016–2024 en vez de sólo 2 puntos.
+OLAS = [2016, 2018, 2020, 2022, 2024]
+# El panel CONEVAL oficial (cargar_pobreza) sólo llega a 2022; 2024 queda
+# reconstrucción-sólo. Las olas con oficial se validan con la puerta de 2pp.
+OLAS_OFICIAL = [2016, 2018, 2020, 2022]
+
+# Bootstrap estratificado por UPM (diseño muestral ENIGH) para IC de encuesta (§3.5).
+N_BOOT = 300
+SEED_BOOT = 20240723
+
+# Carencias que entran al promedio; 'ic_asalud' se excluye del promedio COMPARABLE
+# en el tiempo por la ruptura INSABI→IMSS-Bienestar 2022→2024 (§3.2).
+CARENCIAS_6 = ["ic_rezedu", "ic_asalud", "ic_segsoc", "ic_cv", "ic_sbv", "ic_ali_nc"]
+CARENCIAS_SIN_SALUD = [c for c in CARENCIAS_6 if c != "ic_asalud"]
 
 
 def leer_tabla(año: int, tabla: str, columnas: list[str]) -> pl.DataFrame:
@@ -69,6 +106,50 @@ def leer_tabla(año: int, tabla: str, columnas: list[str]) -> pl.DataFrame:
 
 def _num(df: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
     return df.with_columns(pl.col(c).cast(pl.Float64, strict=False) for c in cols)
+
+
+# ---------------------------------------------------------------- IC bootstrap (UPM)
+
+def _boot_ci_matriz(M: np.ndarray, w: np.ndarray, est_dis: np.ndarray,
+                    upm: np.ndarray, rng: np.random.Generator
+                    ) -> tuple[np.ndarray, np.ndarray]:
+    """IC 95% (percentil) de la media ponderada Σw·v/Σw de CADA columna de M
+    (n×K, con NaN = valor nulo), con bootstrap ESTRATIFICADO POR UPM (Rao-Wu, con
+    reemplazo) — mismo diseño que prepare_impunidad_index._boot_media_upm, pero
+    vectorizado sobre las K columnas de carencia/compuesto en una sola pasada de
+    remuestreo. Nulos: el denominador de cada columna suma sólo los pesos donde el
+    valor no es NaN (idéntico a agregar_estado.wavg)."""
+    BIG = int(upm.max()) + 1
+    key = est_dis.astype(np.int64) * BIG + upm.astype(np.int64)
+    uniq, inv = np.unique(key, return_inverse=True)
+    K = len(uniq)
+    order = np.argsort(inv, kind="stable")
+    cnt = np.bincount(inv, minlength=K)
+    ptr = np.zeros(K + 1, dtype=np.int64)
+    ptr[1:] = np.cumsum(cnt)
+    strat = uniq // BIG
+    seg_lo = np.empty(K, np.int64)
+    seg_hi = np.empty(K, np.int64)
+    bounds = np.concatenate([[0], np.flatnonzero(np.diff(strat)) + 1, [K]])
+    for i in range(len(bounds) - 1):
+        s, e = bounds[i], bounds[i + 1]
+        seg_lo[s:e] = s
+        seg_hi[s:e] = e
+
+    valido = ~np.isnan(M)                       # n×Kcol
+    Mnum = np.where(valido, M, 0.0) * w[:, None]  # numerador por fila
+    Wden = valido * w[:, None]                   # denominador por fila
+    ncol = M.shape[1]
+    ms = np.empty((N_BOOT, ncol))
+    for b in range(N_BOOT):
+        su = seg_lo + (rng.random(K) * (seg_hi - seg_lo)).astype(np.int64)
+        counts = cnt[su]
+        pos = order[np.repeat(ptr[su], counts)
+                    + np.arange(counts.sum()) - np.repeat(np.cumsum(counts) - counts, counts)]
+        num = Mnum[pos].sum(axis=0)
+        den = Wden[pos].sum(axis=0)
+        ms[b] = np.where(den > 0, num / den, np.nan)
+    return (np.nanpercentile(ms, 2.5, axis=0), np.nanpercentile(ms, 97.5, axis=0))
 
 
 # ---------------------------------------------------------------- informalidad (ENOE)
@@ -394,26 +475,34 @@ def _ki(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def poblacion_base(año: int) -> pl.DataFrame:
+    # concentradohogar aporta cve_ent, factor y las variables de diseño muestral
+    # (upm, est_dis) para el bootstrap del IC (§3.5); son a nivel hogar y se unen a
+    # las personas por folioviv/foliohog.
+    con = _ki(leer_tabla(año, "concentradohogar",
+                         ["folioviv", "foliohog", "ubica_geo", "factor", "upm", "est_dis"]))
+    con = con.with_columns(
+        pl.col("factor").cast(pl.Float64, strict=False),
+        pl.col("upm").cast(pl.Int64, strict=False),
+        pl.col("est_dis").cast(pl.Int64, strict=False),
+        pl.col("ubica_geo").str.slice(0, 2).cast(pl.Int64).alias("cve_ent"),
+    ).select("folioviv", "foliohog", "cve_ent", "factor", "upm", "est_dis")
+
     if año <= 2020:
         # poblacion no trae entidad ni factor en 2016/2018/2020: se toman de
         # concentradohogar (cve_ent = 2 primeros dígitos de ubica_geo).
         p = leer_tabla(año, "poblacion", ["folioviv", "foliohog", "numren", "parentesco"])
         p = _ki(p).with_columns(pl.col("parentesco").cast(pl.Float64, strict=False))
-        con = _ki(leer_tabla(año, "concentradohogar",
-                             ["folioviv", "foliohog", "ubica_geo", "factor"]))
-        con = con.with_columns(
-            pl.col("factor").cast(pl.Float64, strict=False),
-            pl.col("ubica_geo").str.slice(0, 2).cast(pl.Int64).alias("cve_ent"),
-        ).select("folioviv", "foliohog", "cve_ent", "factor")
         p = p.join(con, on=["folioviv", "foliohog"], how="left")
     else:
         p = leer_tabla(año, "poblacion",
-                       ["folioviv", "foliohog", "numren", "parentesco", "entidad", "factor"])
+                       ["folioviv", "foliohog", "numren", "parentesco", "entidad"])
         p = _ki(p).with_columns(
             pl.col("parentesco").cast(pl.Float64, strict=False),
-            pl.col("factor").cast(pl.Float64, strict=False),
             pl.col("entidad").cast(pl.Int64, strict=False).alias("cve_ent"),
         )
+        # factor/upm/est_dis desde concentradohogar (poblacion 2022/2024 trae factor
+        # propio, pero lo tomamos del hogar para amarrarlo a upm/est_dis del diseño).
+        p = p.drop("cve_ent").join(con, on=["folioviv", "foliohog"], how="left")
     p = excluir_huespedes(p)
 
     base = (
@@ -424,9 +513,18 @@ def poblacion_base(año: int) -> pl.DataFrame:
          .join(_ki(servicios_vivienda(año)), on=["folioviv", "foliohog"], how="left")
          .join(_ki(alimentacion(año)), on=["folioviv", "foliohog"], how="left")
     )
+    # i_privacion con '+' propaga null (se anula si cualquier carencia es nula) —
+    # comportamiento original del que dependen pct_carencias3 y la puerta de 2pp; NO
+    # cambiar a sum_horizontal (que trataría null como 0).
+    suma_6 = pl.col("ic_rezedu") + pl.col("ic_asalud") + pl.col("ic_segsoc") + \
+        pl.col("ic_cv") + pl.col("ic_sbv") + pl.col("ic_ali_nc")
+    suma_sin_salud = pl.col("ic_rezedu") + pl.col("ic_segsoc") + \
+        pl.col("ic_cv") + pl.col("ic_sbv") + pl.col("ic_ali_nc")
     return base.with_columns(
-        (pl.col("ic_rezedu") + pl.col("ic_asalud") + pl.col("ic_segsoc") +
-         pl.col("ic_cv") + pl.col("ic_sbv") + pl.col("ic_ali_nc")).alias("i_privacion")
+        suma_6.alias("i_privacion"),
+        # promedio COMPARABLE en el tiempo: excluye salud por el quiebre INSABI→
+        # IMSS-Bienestar (§3.2); mismo null-propagate que i_privacion.
+        suma_sin_salud.alias("i_privacion_sin_salud"),
     )
 
 
@@ -444,6 +542,7 @@ def agregar_estado(base: pl.DataFrame, año: int) -> pl.DataFrame:
         (wavg("ic_sbv") * 100).alias("pct_ic_sbv"),
         (wavg("ic_ali_nc") * 100).alias("pct_ic_ali"),
         wavg("i_privacion").alias("promedio_carencias"),
+        wavg("i_privacion_sin_salud").alias("promedio_carencias_sin_salud"),
         (((pl.col("i_privacion") >= 3).cast(pl.Int8) * pl.col("factor")).sum()
          / pl.col("factor").filter(pl.col("i_privacion").is_not_null()).sum() * 100
          ).alias("pct_carencias3"),
@@ -451,11 +550,58 @@ def agregar_estado(base: pl.DataFrame, año: int) -> pl.DataFrame:
     return out.sort("cve_ent")
 
 
-def validar_reconstruccion(recon: pl.DataFrame, año: int) -> None:
+# Indicadores con IC (columna de salida, columna cruda persona-nivel, escala).
+IND_BOOT = [
+    ("pct_ic_rezedu", "ic_rezedu", 100.0),
+    ("pct_ic_asalud", "ic_asalud", 100.0),
+    ("pct_ic_segsoc", "ic_segsoc", 100.0),
+    ("pct_ic_cv", "ic_cv", 100.0),
+    ("pct_ic_sbv", "ic_sbv", 100.0),
+    ("pct_ic_ali", "ic_ali_nc", 100.0),
+    ("promedio_carencias", "i_privacion", 1.0),
+    ("promedio_carencias_sin_salud", "i_privacion_sin_salud", 1.0),
+    ("pct_carencias3", "_car3", 100.0),  # (i_privacion>=3), derivada abajo
+]
+
+
+def bootstrap_estado(base: pl.DataFrame, año: int) -> pl.DataFrame:
+    """IC 95% bootstrap-UPM (§3.5) de cada tasa/compuesto por estado. Espejo del
+    diseño de prepare_impunidad_index, generalizado a las 9 columnas en una pasada.
+    Devuelve cve_ent + {col}_lo / {col}_hi para cada indicador de IND_BOOT."""
+    crudas = [c for _, c, _ in IND_BOOT if c != "_car3"]
+    # (i_privacion>=3) es null cuando i_privacion es null (la comparación propaga
+    # null) → NaN en numpy → excluido del denominador, igual que pct_carencias3.
+    d = base.select(["cve_ent", "factor", "upm", "est_dis", *crudas]) \
+        .drop_nulls(["cve_ent", "factor", "upm", "est_dis"]) \
+        .filter(pl.col("factor") > 0) \
+        .with_columns((pl.col("i_privacion") >= 3).cast(pl.Float64).alias("_car3"))
+
+    cols_M = [c for _, c, _ in IND_BOOT]
+    M_full = d.select(cols_M).to_numpy().astype(float)   # nulls → NaN
+    w_full = d["factor"].to_numpy().astype(float)
+    est_full = d["est_dis"].to_numpy()
+    upm_full = d["upm"].to_numpy()
+    cve_full = d["cve_ent"].to_numpy()
+
+    rng = np.random.default_rng(SEED_BOOT + año)
+    filas = []
+    for cve in np.unique(cve_full):
+        m = cve_full == cve
+        lo, hi = _boot_ci_matriz(M_full[m], w_full[m], est_full[m], upm_full[m], rng)
+        fila = {"cve_ent": int(cve)}
+        for j, (nombre, _, escala) in enumerate(IND_BOOT):
+            fila[f"{nombre}_lo"] = float(lo[j]) * escala
+            fila[f"{nombre}_hi"] = float(hi[j]) * escala
+        filas.append(fila)
+    return pl.DataFrame(filas).with_columns(pl.lit(año).alias("año")).sort("cve_ent")
+
+
+def validar_reconstruccion(recon: pl.DataFrame, año: int) -> pl.DataFrame:
     """Compara la reconstrucción de una ola contra el panel CONEVAL oficial
     (cargar_pobreza cubre 2016/2018/2020/2022). Las 4 carencias exactas se
     bloquean si el error medio supera 2pp; los 2 proxies (salud, seg. social)
-    sólo reportan su sesgo."""
+    sólo reportan su sesgo. Devuelve el sesgo POR ESTADO de los dos proxies
+    (§3.1) para arrastrarlo como banda de incertidumbre a 2024."""
     oficial = cargar_pobreza().filter(pl.col("año") == año)
     comp = recon.join(oficial, on="cve_ent", suffix="_oficial")
 
@@ -469,12 +615,36 @@ def validar_reconstruccion(recon: pl.DataFrame, año: int) -> None:
         assert e["m"] < 2.0, f"{año} {nombre}: error medio {e['m']:.2f}pp supera el umbral de 2pp"
 
     proxies = [("pct_ic_asalud", "salud (proxy)"), ("pct_ic_segsoc", "seg. social (proxy)")]
+    sesgo_estado = comp.select("cve_ent")
     for col, nombre in proxies:
         sesgo = pl.col(col) - pl.col(f"{col}_oficial")
         s = comp.select(sesgo.mean().alias("m"), sesgo.min().alias("lo"), sesgo.max().alias("hi")).row(0, named=True)
         print(f"  {nombre:20s}: sesgo nacional medio {s['m']:+.2f}pp "
               f"(rango {s['lo']:+.2f} a {s['hi']:+.2f}pp) — proxy, no bloquea")
+        sesgo_estado = sesgo_estado.join(
+            comp.select("cve_ent", sesgo.alias(f"sesgo_{col}")), on="cve_ent")
     print(f"  → gate de validación {año} OK")
+    return sesgo_estado.with_columns(pl.lit(año).alias("año"))
+
+
+def ingreso_hogar_pc(año: int) -> pl.DataFrame:
+    """Ingreso corriente TRIMESTRAL per cápita del hogar por estado (§3.7): mejor
+    proxy de bienestar del residente que el PIBpc, que se infla con el PIB petrolero
+    en Campeche/Tabasco mientras sus residentes son pobres. ing_cor y tot_integ
+    (tamaño del hogar) vienen de concentradohogar; per cápita =
+    Σ(ing_cor·factor) / Σ(tot_integ·factor)."""
+    c = leer_tabla(año, "concentradohogar",
+                   ["folioviv", "foliohog", "ubica_geo", "factor", "ing_cor", "tot_integ"])
+    c = c.with_columns(
+        pl.col("ing_cor").cast(pl.Float64, strict=False),
+        pl.col("factor").cast(pl.Float64, strict=False),
+        pl.col("tot_integ").cast(pl.Float64, strict=False),
+        pl.col("ubica_geo").str.slice(0, 2).cast(pl.Int64).alias("cve_ent"),
+    )
+    return (c.group_by("cve_ent").agg(
+        ((pl.col("ing_cor") * pl.col("factor")).sum()
+         / (pl.col("tot_integ") * pl.col("factor")).sum()).alias("ingreso_hogar_pc"))
+        .with_columns(pl.lit(año).alias("año")).sort("cve_ent"))
 
 
 def tabla_resumen(ancho: pl.DataFrame) -> pl.DataFrame:
@@ -569,84 +739,144 @@ def main() -> None:
                               "dentro de cada categoría del índice (--indice).")
     args = parser.parse_args()
 
-    print("=== 1/6 Reconstrucción 2022 y validación contra CONEVAL oficial ===")
-    car22 = agregar_estado(poblacion_base(2022), 2022)
-    validar_reconstruccion(car22, 2022)
+    # ---- 1/6 Panel 2016–2024: reconstrucción + validación por ola + IC bootstrap ----
+    print(f"=== 1/6 Panel ENIGH {OLAS[0]}–{OLAS[-1]}: reconstrucción, validación e IC ===")
+    cols_pt = ["cve_ent", "año", "pct_ic_rezedu", "pct_ic_asalud", "pct_ic_segsoc",
+               "pct_ic_cv", "pct_ic_sbv", "pct_ic_ali", "pct_carencias3",
+               "promedio_carencias", "promedio_carencias_sin_salud"]
+    puntos, ics, sesgos = [], [], []
+    for año in OLAS:
+        base = poblacion_base(año)
+        car = agregar_estado(base, año)
+        puntos.append(car.select(cols_pt))
+        ics.append(bootstrap_estado(base, año))
+        if año in OLAS_OFICIAL:
+            sesgos.append(validar_reconstruccion(car, año))
+        else:
+            print(f"  {año}: reconstrucción-sólo (sin oficial CONEVAL para validar)")
+    carencias = pl.concat(puntos)
+    ci = pl.concat(ics)
+    sesgo_panel = pl.concat(sesgos)
 
-    print("\n=== 2/6 Reconstrucción 2024 (ENIGH cruda) ===")
-    car24 = agregar_estado(poblacion_base(2024), 2024)
+    # Sesgo por estado del proxy salud/segsoc: estabilidad 2016–2022 y arrastre a 2024 (§3.1)
+    print("\n  Sesgo por estado del proxy (proxy − oficial), estabilidad 2016–2022:")
+    for col in ("pct_ic_asalud", "pct_ic_segsoc"):
+        w = sesgo_panel.group_by("cve_ent").agg(
+            pl.col(f"sesgo_{col}").mean().alias("m"),
+            pl.col(f"sesgo_{col}").std().alias("sd"))
+        rng_sd = w.select(pl.col("sd").median().alias("med"), pl.col("sd").max().alias("mx")).row(0, named=True)
+        print(f"    {col:16s}: desv. temporal del sesgo por estado — mediana {rng_sd['med']:.2f}pp, "
+              f"máx {rng_sd['mx']:.2f}pp (menor = sesgo estable, arrastrable)")
+    # arrastre: sesgo del último año oficial (2022) por estado, aplicado como corrección a 2024
+    arrastre = (sesgo_panel.filter(pl.col("año") == max(OLAS_OFICIAL))
+                .select("cve_ent",
+                        pl.col("sesgo_pct_ic_asalud").alias("sesgo_asalud_2022"),
+                        pl.col("sesgo_pct_ic_segsoc").alias("sesgo_segsoc_2022")))
 
-    cols_carencias = ["cve_ent", "año", "pct_ic_rezedu", "pct_ic_asalud", "pct_ic_segsoc",
-                       "pct_ic_cv", "pct_ic_sbv", "pct_ic_ali", "pct_carencias3", "promedio_carencias"]
-    carencias = pl.concat([car22.select(cols_carencias), car24.select(cols_carencias)])
+    # ---- 2/6 Ingreso de hogar per cápita (ENIGH), mejor proxy que PIBpc (§3.7) ----
+    print(f"\n=== 2/6 Ingreso de hogar per cápita (ENIGH) {OLAS[0]}–{OLAS[-1]} ===")
+    ingreso = pl.concat([ingreso_hogar_pc(año) for año in OLAS])
 
-    print("\n=== 3/6 PIB per cápita 2022/2024 ===")
-    pob = cargar_poblacion().filter(pl.col("año").is_in([2022, 2024]))
+    # ---- 3/6 PIB per cápita ----
+    print("\n=== 3/6 PIB per cápita ===")
+    pob = cargar_poblacion().filter(pl.col("año").is_in(OLAS))
     pib = leer_pibe(PIBE_TOTAL, bloque="Millones de pesos a precios de 2018").filter(
-        pl.col("año").is_in([2022, 2024]))
+        pl.col("año").is_in(OLAS))
     pib_pc = (pib.join(pob, on=["cve_ent", "año"])
                  .with_columns((pl.col("valor") * 1_000_000 / pl.col("pob_total")).alias("pib_pc"))
                  .select("cve_ent", "año", "pib_pc"))
 
-    print("\n=== 4/6 Recaudación fiscal federal imputada 2022/2024 (NO es PIB, ver docstring) ===")
-    aporte = cargar_aporte_imputado().filter(pl.col("año").is_in([2022, 2024]))
+    # ---- 4/6 Recaudación imputada (NO es PIB) + transferencias federales ----
+    print("\n=== 4/6 Recaudación fiscal federal imputada (NO es PIB, ver docstring) ===")
+    aporte = cargar_aporte_imputado().filter(pl.col("año").is_in(OLAS))
     recaudacion = (
         aporte.join(pob, on=["cve_ent", "año"])
               .with_columns(
-                  # 'recaudacion' = suma de monto_imputado_millones_pesos (informe_data/
-                  # recaudacion_imputada_estatal.parquet) -> millones de pesos, de ahí ×1e6.
                   (pl.col("recaudacion") * 1_000_000 / pl.col("pob_total")).alias("recaudacion_imputada_pc"),
                   (pl.col("share_recaudacion") * 100).alias("share_recaudacion_imputada"),
               )
               .select("cve_ent", "año", "recaudacion_imputada_pc", "share_recaudacion_imputada")
     )
-    for año in (2022, 2024):
+    años_aporte = sorted(recaudacion["año"].unique().to_list())
+    for año in años_aporte:
         s = recaudacion.filter(pl.col("año") == año)["share_recaudacion_imputada"].sum()
         print(f"  {año}: suma de shares = {s:.1f}% (debe rondar 100%)")
+    if set(OLAS) - set(años_aporte):
+        print(f"  (sin recaudación imputada para {sorted(set(OLAS) - set(años_aporte))} → nulos honestos)")
 
-    print("\n=== Transferencias federales (participaciones Ramo 28 + aportaciones Ramo 33), 2024 ===")
-    transf_2024 = (
+    print("\n=== Transferencias federales (participaciones Ramo 28 + aportaciones Ramo 33) ===")
+    transf = (
         cargar_transferencias()
         .rename({"ciclo": "año"})
         .with_columns(pl.col("año").cast(pl.Int64))
-        .filter(pl.col("año") == 2024)
-        .join(pob.filter(pl.col("año") == 2024), on=["cve_ent", "año"])
-        .with_columns((pl.col("transfer") / pl.col("pob_total")).alias("transferencias_pc_2024"))
-        .select("cve_ent", "transferencias_pc_2024")
+        .filter(pl.col("año").is_in(OLAS))
+        .join(pob, on=["cve_ent", "año"])
+        .with_columns((pl.col("transfer") / pl.col("pob_total")).alias("transferencias_pc"))
+        .select("cve_ent", "año", "transferencias_pc")
     )
 
-    print("\n=== 5/6 Informalidad laboral (ENOE, emp_ppal) 2022/2024 ===")
+    print("\n=== 5/6 Informalidad laboral (ENOE, emp_ppal) — sólo 2022/2024 (§3.8) ===")
+    # ENOE cambia de nombre y de variante por trimestre (2018 sin Q1, 2020 mixto
+    # enoe/enoen con Q2 suspendido por COVID): la serie limpia sólo cubre 2022/2024;
+    # informalidad queda como columna parcial y decorativa, no integrada al índice.
+    años_informal = [a for a in OLAS if a in ENOE_VARIANTE]
     informal = pl.concat([
-        informalidad(año).with_columns(pl.lit(año).alias("año")) for año in (2022, 2024)
+        informalidad(año).with_columns(pl.lit(año).alias("año")) for año in años_informal
     ])
-    for año in (2022, 2024):
-        i = informal.filter(pl.col("año") == año).join(pob.filter(pl.col("año") == año),
-                                                         on="cve_ent")
+    for año in años_informal:
+        i = informal.filter(pl.col("año") == año).join(pob.filter(pl.col("año") == año), on="cve_ent")
         nac = (i["pct_informal"] * i["pob_total"]).sum() / i["pob_total"].sum()
         print(f"  {año}: informalidad nacional (ponderada por población) ≈ {nac:.1f}%")
 
-    tabla = (carencias.join(pib_pc, on=["cve_ent", "año"], how="left")
+    # ---- Ensamblado del panel largo (deliverable de trayectoria) ----
+    tabla = (carencias
+             .join(ci, on=["cve_ent", "año"], how="left")
+             .join(ingreso, on=["cve_ent", "año"], how="left")
+             .join(pib_pc, on=["cve_ent", "año"], how="left")
              .join(recaudacion, on=["cve_ent", "año"], how="left")
+             .join(transf, on=["cve_ent", "año"], how="left")
              .join(informal, on=["cve_ent", "año"], how="left")
-             .with_columns(pl.col("cve_ent").replace_strict(NOMBRE).alias("estado")))
+             .join(arrastre, on="cve_ent", how="left")
+             .with_columns(
+                 pl.col("cve_ent").replace_strict(NOMBRE).alias("estado"),
+                 # §3.2: el pilar salud 2024 (inst_9, IMSS-Bienestar) NO es comparable
+                 # con 2016–2022 (segpop/pop_insabi). Marca de quiebre.
+                 (pl.col("año") == 2024).alias("salud_no_comparable"),
+             ))
 
     print("\n=== 6/6 Prueba de sensatez: top-5 / bottom-5 por promedio_carencias ===")
-    for año in (2022, 2024):
+    for año in OLAS:
         t = tabla.filter(pl.col("año") == año).sort("promedio_carencias", descending=True)
-        print(f"  {año} más carencias: {t.head(5)['estado'].to_list()}")
+        print(f"  {año} más carencias:  {t.head(5)['estado'].to_list()}")
         print(f"  {año} menos carencias: {t.tail(5)['estado'].to_list()}")
 
+    # Trayectoria nacional (ponderada por población) del promedio COMPARABLE sin salud
+    print("\n=== Trayectoria nacional — promedio de carencias SIN salud (comparable, §3.2) ===")
+    tp = tabla.join(pob, on=["cve_ent", "año"])
+    for año in OLAS:
+        s = tp.filter(pl.col("año") == año)
+        nac_sin = (s["promedio_carencias_sin_salud"] * s["pob_total"]).sum() / s["pob_total"].sum()
+        nac_con = (s["promedio_carencias"] * s["pob_total"]).sum() / s["pob_total"].sum()
+        print(f"  {año}: sin salud {nac_sin:.3f}   (con salud {nac_con:.3f})")
+
+    tabla.sort(["cve_ent", "año"]).write_parquet(PANEL)
+    print(f"\nPanel largo 2016–2024 (32 estados × {len(OLAS)} olas, con IC) → {PANEL}")
+
+    # ---- Vista ancha 2022/2024 (compatibilidad con las tablas de display) ----
+    transf_2024 = transf.filter(pl.col("año") == 2024).select(
+        "cve_ent", pl.col("transferencias_pc").alias("transferencias_pc_2024"))
     ancho = (
-        tabla.sort(["cve_ent", "año"])
+        tabla.filter(pl.col("año").is_in([2022, 2024])).sort(["cve_ent", "año"])
              .pivot(on="año", index=["cve_ent", "estado"],
                     values=["pct_ic_rezedu", "pct_ic_asalud", "pct_ic_segsoc", "pct_ic_cv",
-                            "pct_ic_sbv", "pct_ic_ali", "pct_carencias3", "promedio_carencias", "pib_pc",
+                            "pct_ic_sbv", "pct_ic_ali", "pct_carencias3", "promedio_carencias",
+                            "promedio_carencias_sin_salud", "pib_pc", "ingreso_hogar_pc",
                             "recaudacion_imputada_pc", "share_recaudacion_imputada", "pct_informal"])
              .sort("cve_ent")
              .join(transf_2024, on="cve_ent", how="left")
     )
     ancho.write_csv(SALIDA)
-    print(f"\nTabla final (32 estados, precisión completa) guardada en {SALIDA}")
+    print(f"Tabla ancha 2022/2024 (compatibilidad) → {SALIDA}")
     if args.indice:
         direccion = "ascendente" if args.ascendente else "descendente"
         modo = "ranking" if args.ranking else "valores"
