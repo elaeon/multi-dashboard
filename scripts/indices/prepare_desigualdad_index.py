@@ -60,6 +60,8 @@ ZIPS_ENIGH = {
     2024: "conjunto_de_datos_enigh2024_ns_csv.zip",
 }
 NIVELES = ["Bajo", "Medio", "Alto", "Extremo"]
+N_BOOT = 300       # réplicas bootstrap para los IC de la dimensión económica
+SEED_BOOT = 20240722
 
 # Métricas que entran al índice compuesto, agrupadas por dimensión, y su
 # orientación (todas: "más alto = más desigual").
@@ -127,8 +129,8 @@ def hogares_ingreso(año: int) -> pl.DataFrame:
     ingreso DENTRO del estado (ponderado por persona)."""
     c = _leer(año, "concentradohogar",
               ["folioviv", "foliohog", "ubica_geo", "factor", "tot_integ",
-               "ing_cor", "estim_alqu"])
-    c = _num(c, ["factor", "tot_integ", "ing_cor", "estim_alqu"])
+               "ing_cor", "estim_alqu", "est_dis", "upm"])
+    c = _num(c, ["factor", "tot_integ", "ing_cor", "estim_alqu", "est_dis", "upm"])
     c = c.with_columns(
         pl.col("folioviv").cast(pl.Int64, strict=False),
         pl.col("foliohog").cast(pl.Int64, strict=False),
@@ -146,18 +148,67 @@ def hogares_ingreso(año: int) -> pl.DataFrame:
     c = c.with_columns(
         pl.min_horizontal((pl.col("frac") * 10).floor().cast(pl.Int64) + 1, pl.lit(10))
         .alias("decil"))
-    return c.select("folioviv", "foliohog", "cve_ent", "ictpc", "factor", "pw", "decil")
+    return c.select("folioviv", "foliohog", "cve_ent", "ictpc", "factor", "pw",
+                    "decil", "est_dis", "upm")
 
 
 # ---------------------------------------------------------------- A. económica
 
+def _boot_eco(x: np.ndarray, w: np.ndarray, est_dis: np.ndarray, upm: np.ndarray,
+              rng: np.random.Generator) -> tuple:
+    """IC 95% (percentil) de Gini y Palma con bootstrap ESTRATIFICADO POR UPM,
+    acorde al diseño muestral de la ENIGH: dentro de cada estrato (est_dis) se
+    remuestrean sus UPMs con reemplazo (conservando el número de UPMs del
+    estrato), se juntan TODOS los hogares de las UPMs elegidas y se recalcula la
+    métrica ponderada. Es el bootstrap de conglomerados (Rao-Wu, con reemplazo);
+    captura la correlación intra-UPM que el bootstrap de hogares ignora.
+
+    Vectorizado: cada UPM recibe un id 0..K-1 ordenado por estrato (los estratos
+    ocupan rangos contiguos de id), los hogares se agrupan por UPM en layout CSR
+    (`order`+`ptr`) y cada réplica muestrea K ids y hace un gather ragged."""
+    BIG = int(upm.max()) + 1
+    key = est_dis.astype(np.int64) * BIG + upm.astype(np.int64)
+    uniq, inv = np.unique(key, return_inverse=True)      # inv: id de UPM por hogar
+    K = len(uniq)
+    order = np.argsort(inv, kind="stable")               # hogares agrupados por UPM
+    cnt = np.bincount(inv, minlength=K)                  # hogares por UPM
+    ptr = np.zeros(K + 1, dtype=np.int64)
+    ptr[1:] = np.cumsum(cnt)
+    strat = uniq // BIG                                  # estrato de cada UPM (ordenado)
+    seg_lo = np.empty(K, np.int64)
+    seg_hi = np.empty(K, np.int64)
+    bounds = np.concatenate([[0], np.flatnonzero(np.diff(strat)) + 1, [K]])
+    for i in range(len(bounds) - 1):
+        s, e = bounds[i], bounds[i + 1]
+        seg_lo[s:e] = s
+        seg_hi[s:e] = e
+
+    gs = np.empty(N_BOOT)
+    ps = np.empty(N_BOOT)
+    for b in range(N_BOOT):
+        su = seg_lo + (rng.random(K) * (seg_hi - seg_lo)).astype(np.int64)  # UPMs muestreadas
+        counts = cnt[su]
+        pos = order[np.repeat(ptr[su], counts)
+                    + np.arange(counts.sum()) - np.repeat(np.cumsum(counts) - counts, counts)]
+        gs[b] = gini(x[pos], w[pos])
+        ps[b] = palma(x[pos], w[pos])
+    return (float(np.percentile(gs, 2.5)), float(np.percentile(gs, 97.5)),
+            float(np.percentile(ps, 2.5)), float(np.percentile(ps, 97.5)))
+
+
 def dim_economica(hog: pl.DataFrame) -> pl.DataFrame:
+    rng = np.random.default_rng(SEED_BOOT)
     filas = []
-    for cve, d in hog.group_by("cve_ent"):
+    for cve, d in hog.sort("cve_ent").group_by("cve_ent", maintain_order=True):
         x, w = d["ictpc"].to_numpy(), d["pw"].to_numpy()
-        filas.append((cve[0], gini(x, w), palma(x, w)))
-    return pl.DataFrame(filas, schema=["cve_ent", "gini_ingreso", "palma_ingreso"],
-                        orient="row")
+        ed, up = d["est_dis"].to_numpy(), d["upm"].to_numpy()
+        glo, ghi, plo, phi = _boot_eco(x, w, ed, up, rng)
+        filas.append((cve[0], gini(x, w), glo, ghi, palma(x, w), plo, phi))
+    return pl.DataFrame(
+        filas,
+        schema=["cve_ent", "gini_ingreso", "gini_ingreso_lo", "gini_ingreso_hi",
+                "palma_ingreso", "palma_ingreso_lo", "palma_ingreso_hi"],
+        orient="row")
 
 
 # ---------------------------------------------------------------- C. educativa
@@ -313,6 +364,24 @@ def validar(panel: pl.DataFrame) -> None:
     print("\nDistribución de niveles (todas las olas, cuartiles fijos):")
     print(panel["nivel"].value_counts().sort("nivel"))
 
+    print(f"\n=== IC bootstrap 95% ({N_BOOT} réplicas): ¿la caída del Gini de "
+          f"ingreso {OLAS[0]}→{OLAS[-1]} es distinguible del ruido muestral? ===")
+    a = panel.filter(pl.col("anio") == OLAS[0]).select(
+        "cve_ent", "estado", pl.col("gini_ingreso").alias("g0"),
+        pl.col("gini_ingreso_lo").alias("lo0"))
+    b = panel.filter(pl.col("anio") == OLAS[-1]).select(
+        "cve_ent", pl.col("gini_ingreso").alias("g1"), pl.col("gini_ingreso_hi").alias("hi1"))
+    cmp = a.join(b, on="cve_ent").with_columns(
+        (pl.col("hi1") < pl.col("lo0")).alias("caida_signif"))  # IC 2024 debajo del IC 2016
+    n_sig = cmp["caida_signif"].sum()
+    print(f"  {n_sig}/32 estados con caída estadísticamente significativa "
+          f"(IC {OLAS[-1]} por debajo del IC {OLAS[0]}, sin traslape).")
+    print("  Ejemplos (Gini con IC95%):")
+    for r in cmp.sort("g0", descending=True).head(4).iter_rows(named=True):
+        marca = "significativa" if r["caida_signif"] else "NO distinguible"
+        print(f"    {r['estado']:<18} {OLAS[0]}={r['g0']:.3f} → {OLAS[-1]}={r['g1']:.3f}  "
+              f"(IC{OLAS[0]} desde {r['lo0']:.3f}, IC{OLAS[-1]} hasta {r['hi1']:.3f}) — {marca}")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -331,7 +400,9 @@ def main() -> None:
         pl.col("cve_ent").replace_strict(NOMBRE).alias("estado"))
 
     cols = ["cve_ent", "estado", "anio",
-            "gini_ingreso", "palma_ingreso", "gini_educativo", "brecha_generacional",
+            "gini_ingreso", "gini_ingreso_lo", "gini_ingreso_hi",
+            "palma_ingreso", "palma_ingreso_lo", "palma_ingreso_hi",
+            "gini_educativo", "brecha_generacional",
             "brecha_segsoc", "brecha_carencias",
             "dim_economica", "dim_social", "dim_educativa",
             "indice_desigualdad", "nivel"]
