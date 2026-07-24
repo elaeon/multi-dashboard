@@ -30,32 +30,39 @@ simplification at city/state scale).
                        Slower (bootstrapping).
 
 Data sources:
-  US states & cities: data/census/population/sub-est2025.csv (SUMLEV 40/162)
+  US cities: data/census/population/sub-est2025.csv (SUMLEV 162, place totals;
+    SUMLEV 157 place-part rows used only to resolve --by-metro's place->CBSA join)
   US metro areas: data/census/population/cbsa-est2025-alldata.csv (CBSA-level rows)
-  MX estados & municipios: dashboard_data/conapo_pob_municipal.parquet
+  MX municipios: dashboard_data/conapo_pob_municipal.parquet
   MX metro areas (Zonas Metropolitanas): data/datos_gob/conapo/municipios_tipologia.csv
     (municipio -> metropoli crosswalk, joined to the CONAPO population parquet above --
     "Las Metropolis de Mexico 2020", SEDATU/CONAPO/INEGI)
 
-Levels:
-  us-states   the 51 US states (+DC), one fit
-  mx-states   the 32 MX estados, one fit
-  us          all US incorporated places pooled nationally, one fit
-  mx          all MX municipios pooled nationally, one fit
-  metro       the 387 US Metropolitan Statistical Areas, one fit
-              (--by-state: one fit PER state instead, using each metro's principal state)
-  mx-metro    the 92 Mexican Zonas Metropolitanas/Metropolis, one fit
-  cities      US incorporated places, one fit PER US state
-  municipios  MX municipios, one fit PER MX estado
-              (--by-metro: one fit PER Zona Metropolitana/Metropoli instead, using only the
-              421 municipios that belong to one)
+Levels (all 4 pool nationally into one fit by default; --by-state/--by-metro break
+the pool down into one fit per state/metro area instead):
+  cities      US incorporated places
+              --by-state: one fit PER US state
+              --by-metro: one fit PER CBSA, using a population-weighted principal
+              CBSA for the ~2% of places split across county lines into 2+ CBSAs;
+              places with no CBSA-mapped county part are excluded (non-metro)
+  municipios  MX municipios
+              --by-state: one fit PER MX estado
+              --by-metro: one fit PER Zona Metropolitana/Metropoli, using only the
+              421 municipios that belong to one
+  us-metro    the 387 US Metropolitan Statistical Areas
+              --by-state: one fit PER state, using each metro's principal state
+  mx-metro    the 92 Mexican Zonas Metropolitanas/Metropolis
+              --by-state: one fit PER estado, using a population-weighted principal
+              estado for the 8 zones spanning 2+ estados
+              --list: also print all 92 zones ranked by population
 
 Run:
   uv run python scripts/zipf/states_size.py
-  uv run python scripts/zipf/states_size.py --level us-states mx-states --year 2020
-  uv run python scripts/zipf/states_size.py --level cities municipios
-  uv run python scripts/zipf/states_size.py --level metro --by-state --min-n 5
-  uv run python scripts/zipf/states_size.py --level mx-metro --year 2025
+  uv run python scripts/zipf/states_size.py --level cities municipios --year 2020
+  uv run python scripts/zipf/states_size.py --level cities --by-state --min-n 5
+  uv run python scripts/zipf/states_size.py --level cities --by-metro --min-n 5
+  uv run python scripts/zipf/states_size.py --level us-metro --by-state --min-n 5
+  uv run python scripts/zipf/states_size.py --level mx-metro --by-state --min-n 5
   uv run python scripts/zipf/states_size.py --level mx-metro --list
   uv run python scripts/zipf/states_size.py --level municipios --by-metro --min-n 5
   uv run python scripts/zipf/states_size.py --engine custom --level mx-metro --gof-boot 50 --ci-boot 200
@@ -78,7 +85,7 @@ US_CBSA_CSV = Path("data/census/population/cbsa-est2025-alldata.csv")
 MX_PARQUET = Path("dashboard_data/conapo_pob_municipal.parquet")
 MX_METRO_CSV = Path("data/datos_gob/conapo/municipios_tipologia.csv")
 
-LEVELS = ["us-states", "mx-states", "us", "mx", "metro", "mx-metro", "cities", "municipios"]
+LEVELS = ["cities", "municipios", "us-metro", "mx-metro"]
 
 STATE_ABBR = {
     "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
@@ -280,9 +287,13 @@ def load_us(year: int) -> pl.DataFrame:
     )
 
 
-def load_us_metro(year: int) -> pl.DataFrame:
+def _read_us_cbsa_csv() -> pl.DataFrame:
     raw = US_CBSA_CSV.read_bytes().decode("latin-1").encode("utf-8")
-    df = pl.read_csv(io.BytesIO(raw))
+    return pl.read_csv(io.BytesIO(raw))
+
+
+def load_us_metro(year: int) -> pl.DataFrame:
+    df = _read_us_cbsa_csv()
     pop_col = f"POPESTIMATE{year}"
     return (
         df.filter(
@@ -296,6 +307,41 @@ def load_us_metro(year: int) -> pl.DataFrame:
         )
         .filter(pl.col("population") > 0)
     )
+
+
+def load_us_place_cbsa(year: int) -> pl.DataFrame:
+    """Maps each US incorporated place (SUMLEV=162) to its CBSA. Place-total rows
+    carry no county FIPS (COUNTY is always "000"), so the join goes through
+    SUMLEV=157 "place part in county" rows instead, which do. Places whose parts
+    span 2+ CBSAs are assigned to whichever CBSA holds the largest population
+    share (population-weighted argmax); places with no CBSA-mapped part at all
+    are excluded (non-metro)."""
+    raw = US_CSV.read_bytes().decode("latin-1").encode("utf-8")
+    df = pl.read_csv(io.BytesIO(raw))
+    pop_col = f"POPESTIMATE{year}"
+
+    county_cbsa = (
+        _read_us_cbsa_csv()
+        .filter(pl.col("LSAD") == "County or equivalent")
+        .select(pl.col("STCOU"), pl.col("CBSA"))
+    )
+    cbsa_names = load_us_metro(year).select(pl.col("cbsa").alias("CBSA"), pl.col("name").alias("cbsa_name"))
+
+    place_cbsa = (
+        df.filter(pl.col("SUMLEV") == 157)
+        .with_columns((pl.col("STATE") * 1000 + pl.col("COUNTY")).alias("STCOU"))
+        .join(county_cbsa, on="STCOU", how="inner")
+        .join(cbsa_names, on="CBSA", how="inner")
+        .group_by("STATE", "PLACE", "cbsa_name")
+        .agg(pl.col(pop_col).cast(pl.Float64).sum().alias("part_pop"))
+        .sort("part_pop", descending=True)
+        .unique(subset=["STATE", "PLACE"], keep="first")
+        .select("STATE", "PLACE", "cbsa_name")
+    )
+    places = df.filter(pl.col("SUMLEV") == 162).select(
+        "STATE", "PLACE", pl.col(pop_col).cast(pl.Float64).alias("population"),
+    )
+    return places.join(place_cbsa, on=["STATE", "PLACE"], how="inner").filter(pl.col("population") > 0)
 
 
 def load_mx(year: int) -> pl.DataFrame:
@@ -324,6 +370,7 @@ def _mx_municipios_with_metro(year: int) -> pl.DataFrame:
         pl.col("clave_compuesta_municipio").alias("CLAVE"),
         pl.col("clave_metropoli"),
         pl.col("nombre"),
+        pl.col("entidad"),
     )
     return pop.join(cross, on="CLAVE", how="inner").filter(pl.col("population") > 0)
 
@@ -335,6 +382,25 @@ def load_mx_metro(year: int) -> pl.DataFrame:
         .group_by("clave_metropoli")
         .agg(pl.col("nombre").first(), pl.col("population").sum())
         .filter(pl.col("population") > 0)
+    )
+
+
+def mx_metro_principal_estado(year: int) -> pl.DataFrame:
+    """Resolves each Zona Metropolitana/Metropoli to a single principal estado --
+    trivial for the 84 single-estado zones; for the 8 zones spanning 2+ estados,
+    picks whichever estado holds the largest total municipio population within
+    that zone (a naive "most central-flagged municipios" rule gets the Ciudad de
+    Mexico zone wrong: Mexico state has more central-flagged municipios than
+    Ciudad de Mexico itself, despite the zone being population-centered on CDMX)."""
+    entidad_pop = (
+        _mx_municipios_with_metro(year)
+        .group_by("clave_metropoli", "entidad")
+        .agg(pl.col("population").sum().alias("entidad_pop"))
+    )
+    return (
+        entidad_pop.sort("entidad_pop", descending=True)
+        .unique(subset=["clave_metropoli"], keep="first")
+        .select("clave_metropoli", pl.col("entidad").alias("principal_estado"))
     )
 
 
@@ -356,9 +422,9 @@ def main():
     parser.add_argument("--min-tail", type=int, default=20, help="custom engine only")
     parser.add_argument("--xmin-candidates", type=int, default=200, help="custom engine only")
     parser.add_argument("--seed", type=int, default=42, help="custom engine only")
-    parser.add_argument("--min-n", type=int, default=10, help="min entities to attempt a per-state/estado fit")
-    parser.add_argument("--by-state", action="store_true", help="metro level only: fit each state's metros separately instead of one pooled national fit")
-    parser.add_argument("--by-metro", action="store_true", help="municipios level only: group by Zona Metropolitana/Metropoli instead of by estado")
+    parser.add_argument("--min-n", type=int, default=10, help="min entities to attempt a per-state/metro fit")
+    parser.add_argument("--by-state", action="store_true", help="fit each state/estado separately instead of one pooled national fit (cities, municipios, us-metro, mx-metro)")
+    parser.add_argument("--by-metro", action="store_true", help="fit each metro area separately instead of one pooled national fit (cities, municipios)")
     parser.add_argument("--list", action="store_true", help="mx-metro level only: also print all zones ranked by population alongside the pooled fit")
     args = parser.parse_args()
 
@@ -375,69 +441,51 @@ def main():
         if row:
             rows.append(row)
 
-    if "us-states" in levels:
-        us = load_us(args.year)
-        run(us.filter(pl.col("SUMLEV") == 40)["population"].to_numpy(), "us-states", "ALL")
+    def run_grouped(df: pl.DataFrame, group_col: str, level: str):
+        for group in sorted(df[group_col].unique().to_list()):
+            pop = df.filter(pl.col(group_col) == group)["population"].to_numpy()
+            if pop.size < args.min_n:
+                print(f"  SKIP {level}/{group}: n={pop.size} < min-n={args.min_n}")
+                continue
+            run(pop, level, group)
 
-    if "mx-states" in levels:
-        mx_states = load_mx(args.year).group_by("state").agg(pl.col("population").sum())
-        run(mx_states["population"].to_numpy(), "mx-states", "ALL")
+    if "cities" in levels:
+        us_cities = load_us(args.year).filter(pl.col("SUMLEV") == 162)
+        if args.by_state:
+            run_grouped(us_cities, "state", "cities")
+        elif args.by_metro:
+            run_grouped(load_us_place_cbsa(args.year), "cbsa_name", "cities")
+        else:
+            run(us_cities["population"].to_numpy(), "cities", "ALL")
 
-    if "us" in levels:
-        us = load_us(args.year)
-        run(us.filter(pl.col("SUMLEV") == 162)["population"].to_numpy(), "us", "ALL")
+    if "municipios" in levels:
+        if args.by_state:
+            run_grouped(load_mx(args.year), "state", "municipios")
+        elif args.by_metro:
+            run_grouped(_mx_municipios_with_metro(args.year), "nombre", "municipios")
+        else:
+            mx = load_mx(args.year)
+            run(mx["population"].to_numpy(), "municipios", "ALL")
 
-    if "mx" in levels:
-        mx = load_mx(args.year)
-        run(mx["population"].to_numpy(), "mx", "ALL")
-
-    if "metro" in levels:
+    if "us-metro" in levels:
         metro = load_us_metro(args.year)
         if args.by_state:
             metro = metro.with_columns(pl.col("name").map_elements(primary_state, return_dtype=pl.String).alias("state"))
-            for state in sorted(metro["state"].unique().to_list()):
-                pop = metro.filter(pl.col("state") == state)["population"].to_numpy()
-                if pop.size < args.min_n:
-                    print(f"  SKIP metro/{state}: n={pop.size} < min-n={args.min_n}")
-                    continue
-                run(pop, "metro", state)
+            run_grouped(metro, "state", "us-metro")
         else:
-            run(metro["population"].to_numpy(), "metro", "ALL")
+            run(metro["population"].to_numpy(), "us-metro", "ALL")
 
     if "mx-metro" in levels:
         mx_metro = load_mx_metro(args.year)
-        run(mx_metro["population"].to_numpy(), "mx-metro", "ALL")
+        if args.by_state:
+            grouped = mx_metro.join(mx_metro_principal_estado(args.year), on="clave_metropoli")
+            run_grouped(grouped, "principal_estado", "mx-metro")
+        else:
+            run(mx_metro["population"].to_numpy(), "mx-metro", "ALL")
         if args.list:
             ranked = mx_metro.sort("population", descending=True).with_row_index("rank", offset=1)
             with pl.Config(tbl_rows=-1):
                 print(ranked.select("rank", "nombre", "population"))
-
-    if "cities" in levels:
-        us_cities = load_us(args.year).filter(pl.col("SUMLEV") == 162)
-        for state in sorted(us_cities["state"].unique().to_list()):
-            pop = us_cities.filter(pl.col("state") == state)["population"].to_numpy()
-            if pop.size < args.min_n:
-                print(f"  SKIP cities/{state}: n={pop.size} < min-n={args.min_n}")
-                continue
-            run(pop, "cities", state)
-
-    if "municipios" in levels:
-        if args.by_metro:
-            mx_m = _mx_municipios_with_metro(args.year)
-            for metro_name in sorted(mx_m["nombre"].unique().to_list()):
-                pop = mx_m.filter(pl.col("nombre") == metro_name)["population"].to_numpy()
-                if pop.size < args.min_n:
-                    print(f"  SKIP municipios/{metro_name}: n={pop.size} < min-n={args.min_n}")
-                    continue
-                run(pop, "municipios", metro_name)
-        else:
-            mx = load_mx(args.year)
-            for estado in sorted(mx["state"].unique().to_list()):
-                pop = mx.filter(pl.col("state") == estado)["population"].to_numpy()
-                if pop.size < args.min_n:
-                    print(f"  SKIP municipios/{estado}: n={pop.size} < min-n={args.min_n}")
-                    continue
-                run(pop, "municipios", estado)
 
     result = pl.DataFrame(rows)
     with pl.Config(tbl_rows=-1, tbl_cols=-1):
