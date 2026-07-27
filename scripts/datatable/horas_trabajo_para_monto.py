@@ -36,6 +36,12 @@ BASE = Path(__file__).resolve().parents[2] / "data" / "inegi" / "enoe"
 ENOEN_WINDOW = {(2020, 3), (2020, 4), (2021, 1), (2021, 2), (2021, 3), (2021, 4),
                 (2022, 1), (2022, 2), (2022, 3), (2022, 4)}
 
+# Columnas sdem realmente usadas (por este script y por poder_adquisitivo_nacional.py,
+# que importa read_enoe_table). fac/fac_tri y ent/cve_ent varían por trimestre (ver
+# rupturas de esquema arriba) — se incluyen ambos nombres, un callable en usecols no
+# falla si alguno no está presente en un trimestre dado (a diferencia de pasar una lista).
+USECOLS_SDEM = {"clase2", "ingocup", "hrsocup", "fac", "fac_tri", "ent", "cve_ent", "scian", "c_ocu11c"}
+
 # Catálogos ENOE sdem (codigo 0="No aplica" y el código "No especificado" excluidos:
 # no son opciones de filtro válidas). Fuente: catalogos/scian.csv y catalogos/c_ocu11c.csv
 # dentro del ZIP de cada trimestre.
@@ -107,7 +113,8 @@ def read_enoe_table(year: int, quarter: int, table: str) -> pd.DataFrame:
             raise FileNotFoundError(f"{table} no encontrado en {match}")
         with z.open(candidates[0]) as f:
             data = f.read()
-    return pd.read_csv(io.BytesIO(data), encoding="latin-1", low_memory=False)
+    return pd.read_csv(io.BytesIO(data), encoding="latin-1", low_memory=False,
+                        usecols=lambda c: c in USECOLS_SDEM)
 
 
 def cargar_enoe_año_completo(año: int):
