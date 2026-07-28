@@ -36,6 +36,13 @@ el país quede como un solo bloque conexo.
 por la población/share de cada cluster (escala de calor continua — todos los
 estados de un mismo cluster comparten color).
 
+--regiones K reporta, para las mismas K regiones de estados vecinos que
+--clusters, la trayectoria histórica de población en los 14 censos (cambio,
+% y TCMA) — la agrupación geográfica es la misma para todos los censos (no
+depende del año), así que a diferencia de --clusters (una foto de un año) esto
+muestra el crecimiento de cada región a través del tiempo. Incompatible con
+--entidad.
+
 Run: uv run python scripts/datatable/crecimiento_poblacional.py --entidad Jalisco
      uv run python scripts/datatable/crecimiento_poblacional.py --entidad Jalisco --proyeccion
      uv run python scripts/datatable/crecimiento_poblacional.py --entidad Jalisco --proyeccion 5
@@ -43,6 +50,7 @@ Run: uv run python scripts/datatable/crecimiento_poblacional.py --entidad Jalisc
      uv run python scripts/datatable/crecimiento_poblacional.py --año 1990
      uv run python scripts/datatable/crecimiento_poblacional.py --clusters 5
      uv run python scripts/datatable/crecimiento_poblacional.py --clusters 5 --mapa
+     uv run python scripts/datatable/crecimiento_poblacional.py --regiones 5
 """
 
 import argparse
@@ -318,17 +326,13 @@ def _conectado(cves, vecinos) -> bool:
     return visitados == cves
 
 
-def clusters(censo_df, año, k):
-    """Agrupa las 32 entidades en k regiones de estados vecinos (contiguos),
-    usando clustering jerárquico (ward) sobre el centroide geográfico de cada
-    entidad, restringido a fusionar sólo entidades vecinas (VECINOS) — así el
-    resultado siempre es geográficamente contiguo. La población (año censal) es
-    sólo el dato que se reporta por región, no lo que guía el agrupamiento."""
-    pob = censo_df.filter(pl.col("año") == año).select(["cve_ent", "entidad", "poblacion"])
-    total_nacional = pob["poblacion"].sum()
-    pob_por_cve = dict(zip(pob["cve_ent"].to_list(), pob["poblacion"].to_list()))
-    nombre_por_cve = dict(zip(pob["cve_ent"].to_list(), pob["entidad"].to_list()))
-
+def agrupar(k) -> dict:
+    """Asigna las 32 entidades a k grupos de vecinos contiguos: clustering
+    jerárquico (ward) sobre el centroide geográfico de cada entidad,
+    restringido a fusionar sólo entidades vecinas (VECINOS). La asignación es
+    puramente geográfica — no depende del año censal, así que el mismo
+    agrupamiento sirve para reportar cualquier censo (ver clusters()) o para
+    seguir la trayectoria histórica de cada región (ver serie_regiones())."""
     cent = centroides()
     cves = list(range(1, 33))
     X = np.array([cent[c] for c in cves])
@@ -340,14 +344,31 @@ def clusters(censo_df, año, k):
     grupos = {}
     for cve, etiqueta in zip(cves, etiquetas):
         grupos.setdefault(int(etiqueta), []).append(cve)
-
-    filas = []
     for miembros in grupos.values():
         assert _conectado(miembros, VECINOS), f"cluster desconectado: {miembros}"
-        # Entidades sin dato en este censo (p. ej. Quintana Roo en 1895) se tratan
-        # como 0 al sumar, siempre que el cluster tenga algún integrante con dato.
-        valores = [pob_por_cve[c] for c in miembros]
-        poblacion = sum(v for v in valores if v is not None)
+    return grupos
+
+
+def _pob_grupo(censo_df, miembros, año):
+    """Población de un grupo de entidades en un censo. Entidades sin dato ese
+    censo (p. ej. Quintana Roo en 1895) se tratan como 0, siempre que el grupo
+    tenga algún integrante con dato — si ninguno tiene dato, devuelve None."""
+    valores = (censo_df.filter((pl.col("año") == año) & pl.col("cve_ent").is_in(miembros))
+               ["poblacion"].to_list())
+    disponibles = [v for v in valores if v is not None]
+    return sum(disponibles) if disponibles else None
+
+
+def clusters(censo_df, año, k):
+    """Agrupa las 32 entidades en k regiones de estados vecinos (ver
+    agrupar()) y reporta la población de cada región en un censo dado."""
+    pob = censo_df.filter(pl.col("año") == año).select(["cve_ent", "entidad", "poblacion"])
+    total_nacional = pob["poblacion"].sum()
+    nombre_por_cve = dict(zip(pob["cve_ent"].to_list(), pob["entidad"].to_list()))
+
+    filas = []
+    for miembros in agrupar(k).values():
+        poblacion = _pob_grupo(censo_df, miembros, año)
         filas.append({
             "entidades": sorted(nombre_por_cve[c] for c in miembros),
             "poblacion": poblacion,
@@ -355,6 +376,52 @@ def clusters(censo_df, año, k):
         })
     filas.sort(key=lambda f: f["poblacion"], reverse=True)
     return filas, total_nacional
+
+
+def serie_regiones(censo_df, k, conapo_df=None, paso=1) -> pl.DataFrame:
+    """Trayectoria histórica de población por región — mismo cálculo de
+    cambio/TCMA que calcular() para una entidad, pero sumando la región
+    completa. La agrupación (agrupar()) se calcula una sola vez y es la misma
+    para todos los años, ya que no depende del año.
+
+    Con conapo_df, extiende la serie más allá del último censo (2020) con la
+    reconstrucción/proyección de CONAPO (combinar()), sujeta al mismo `paso`
+    opcional que --proyeccion — sin conapo_df, sólo los 14 censos."""
+    if conapo_df is not None:
+        df = pl.concat([combinar(censo_df, conapo_df, cve, paso) for cve in range(1, 33)])
+    else:
+        df = censo_df
+    nombre_por_cve = dict(censo_df.select(["cve_ent", "entidad"]).unique().iter_rows())
+    total_por_año = dict(df.group_by("año").agg(pl.sum("poblacion")).iter_rows())
+    años = sorted(df["año"].unique().to_list())
+    grupos = list(agrupar(k).values())
+    grupos.sort(key=lambda m: _pob_grupo(df, m, CENSOS[-1]) or 0, reverse=True)
+
+    salida = []
+    for cluster_id, miembros in enumerate(grupos, start=1):
+        entidades = ", ".join(sorted(nombre_por_cve[c] for c in miembros))
+        año_prev = pob_prev = None
+        for año in años:
+            pob = _pob_grupo(df, miembros, año)
+            fila = {"cluster_id": cluster_id, "entidades": entidades, "año": año,
+                    "poblacion": pob,
+                    "share_pct": pob / total_por_año[año] * 100 if pob is not None else None,
+                    "años": None, "cambio_absoluto": None,
+                    "cambio_pct": None, "tcma_pct": None}
+            if pob is not None and pob_prev is not None:
+                años_dif = año - año_prev
+                fila["años"] = años_dif
+                fila["cambio_absoluto"] = pob - pob_prev
+                fila["cambio_pct"] = (pob - pob_prev) / pob_prev * 100
+                fila["tcma_pct"] = ((pob / pob_prev) ** (1 / años_dif) - 1) * 100
+            salida.append(fila)
+            if pob is not None:
+                año_prev, pob_prev = año, pob
+    return pl.DataFrame(salida, schema={
+        "cluster_id": pl.Int64, "entidades": pl.Utf8, "año": pl.Int16,
+        "poblacion": pl.Int64, "share_pct": pl.Float64, "años": pl.Int16,
+        "cambio_absoluto": pl.Int64, "cambio_pct": pl.Float64, "tcma_pct": pl.Float64,
+    })
 
 
 def mapa_clusters(filas, año, k, modo="poblacion", union=False) -> Path:
@@ -431,6 +498,11 @@ def main():
                    help="Agrupa las 32 entidades en N regiones de estados vecinos (1-32) y "
                         "reporta población/share por región, para --año. Incompatible con "
                         "--entidad")
+    p.add_argument("--regiones", type=_k, default=None,
+                   help="Igual que --clusters, pero reporta la trayectoria histórica (los 14 "
+                        "censos) de población de cada región, en vez de una foto de un año. "
+                        "Admite --proyeccion para extenderla más allá de 2020. Incompatible "
+                        "con --entidad")
     p.add_argument("--proyeccion", nargs="?", type=_paso, const=1, default=None,
                    help="Complementa la serie con la reconstrucción/proyección de CONAPO "
                         "(1990-2040): llena los huecos intercensales de 1990 a 2020 y agrega "
@@ -457,6 +529,45 @@ def main():
 
     censo_df = leer_poblacion_historica()
 
+    if a.regiones is not None:
+        if a.entidad is not None:
+            p.error("--regiones es incompatible con --entidad (es un reporte nacional)")
+        conapo_df = leer_conapo() if a.proyeccion else None
+        tabla = serie_regiones(censo_df, a.regiones, conapo_df, a.proyeccion or 1)
+
+        print(f"\n{'═' * 78}")
+        print(f"  Crecimiento poblacional por región — {a.regiones} clusters de estados vecinos")
+        rango = "1895–2020, censos" if not a.proyeccion else (
+            "1895–2040, censo + CONAPO" if a.proyeccion == 1
+            else f"1895–2040, censo + CONAPO, paso {a.proyeccion} años")
+        print(f"  ({rango} — agrupación geográfica fija, no depende del año)")
+        print("═" * 78)
+        etiqueta_col = "Año" if a.proyeccion else "Censo"
+        for cluster_id in dict.fromkeys(tabla["cluster_id"].to_list()):
+            sub = tabla.filter(pl.col("cluster_id") == cluster_id)
+            print(f"\n  Cluster {cluster_id}: {sub['entidades'][0]}")
+            print(f"  {etiqueta_col:<7} {'Población':>13} {'Share':>7} {'Δ Población':>14} {'Δ % (total)':>13}"
+                  f" {'Años':>6} {'TCMA % anual':>13}")
+            for r in sub.iter_rows(named=True):
+                print(f"  {r['año']:<7} {_fmt(r['poblacion']):>13}"
+                      f" {_fmt(r['share_pct'], 1, sufijo='%'):>7}"
+                      f" {_fmt(r['cambio_absoluto'], signo=True):>14}"
+                      f" {_fmt(r['cambio_pct'], 1, signo=True, sufijo='%'):>13}"
+                      f" {_fmt(r['años']):>6}"
+                      f" {_fmt(r['tcma_pct'], 2, signo=True, sufijo='%'):>13}")
+        print()
+        if a.proyeccion:
+            print("Nota: en los años censales la población es la del censo (suma de la región).")
+            print("CONAPO llena el resto de los años, pero su cifra difiere del censo en los años")
+            print("censales (ajuste de subenumeración + población a mitad de año vs. fecha censal)")
+            print("— por eso puede verse un salto en el primer año inmediato tras cada censo.\n")
+
+        if a.guardar:
+            ruta = DIR / f"crecimiento_regiones_{a.regiones}.parquet"
+            tabla.write_parquet(ruta)
+            print(f"Saved → {ruta}  ({tabla.height:,} filas)\n")
+        return
+
     if a.clusters is not None:
         if a.entidad is not None:
             p.error("--clusters es incompatible con --entidad (es un reporte nacional)")
@@ -478,10 +589,14 @@ def main():
             filas_guardar = []
             for i, f in enumerate(filas, start=1):
                 acumulado += f["share_pct"]
-                filas_guardar.append({"cluster_id": i, "entidades": ", ".join(f["entidades"]),
-                                      "poblacion": f["poblacion"], "share_pct": f["share_pct"],
-                                      "share_pct_acum": acumulado})
-            salida = pl.DataFrame(filas_guardar)
+                for entidad in f["entidades"]:
+                    filas_guardar.append({
+                        "cluster_id": i, "entidad": entidad,
+                        "cve_ent": normalizar_estado(entidad),
+                        "poblacion_cluster": f["poblacion"], "share_pct": f["share_pct"],
+                        "share_pct_acum": acumulado,
+                    })
+            salida = pl.DataFrame(filas_guardar).with_columns(pl.col("cve_ent").cast(pl.Int16))
             ruta = DIR / f"crecimiento_clusters_{a.año}_{a.clusters}.parquet"
             salida.write_parquet(ruta)
             print(f"Saved → {ruta}  ({salida.height:,} filas)\n")
