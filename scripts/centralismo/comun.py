@@ -90,6 +90,7 @@ _ALIAS.update({
     "michoacan de ocampo": 16,
     "veracruz de ignacio de la llave": 30,
     "queretaro de arteaga": 22,
+    "queretaro arteaga": 22,
     "mexico": 15,                # PIBE/SEMARNAT: 'México' = Estado de México
     "estado de mexico": 15,
     "distrito federal": 9,       # pre-2016 (SIE, SGM)

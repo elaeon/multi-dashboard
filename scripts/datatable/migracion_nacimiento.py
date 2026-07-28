@@ -111,49 +111,37 @@ def detalle(df, cve, censo, top):
     return inm, emi
 
 
-def flujos_acumulados(df, cve, censos):
-    """Suma inmigrantes/emigrantes de una entidad a través de varios censos.
-
-    Cada censo es un STOCK a esa fecha, no un flujo entre censos: una persona que
-    nunca cambió de entidad aparece en cada edición censal en que se levantó. La
-    suma es la magnitud acumulada de la serie, no un conteo de personas únicas.
-    """
-    inms, emis = [], []
-    for censo in censos:
-        inm, emi, _ = flujos(df, cve, censo)
-        inms.append(inm)
-        emis.append(emi)
-    inm = (pl.concat(inms).group_by("origen").agg(pl.col("personas").sum())
-           .sort("personas", descending=True))
-    emi = (pl.concat(emis).group_by("destino").agg(pl.col("personas").sum())
-           .sort("personas", descending=True))
-    return inm, emi
-
-
 def acumulado(df, cve, censos, top):
-    inm, emi = flujos_acumulados(df, cve, censos)
-    n_inm, n_emi = inm["personas"].sum(), emi["personas"].sum()
-
+    """Reporte de un rango de censos, usando el CENSO DESTINO (el más reciente
+    del rango) como cifra reportada — es un stock, ya consistente con la
+    población real de ese año, así que sumarlo con censos anteriores duplicaría
+    personas que nunca cambiaron de entidad. Los censos anteriores del rango se
+    muestran como trayectoria de contexto, sin sumarse.
+    """
+    censo_destino = censos[-1]
     print(f"\n{'═' * 72}")
-    print(f"  {NOMBRE[cve]} — Censos {censos[0]}–{censos[-1]} (acumulado)")
-    print("  Migración interestatal acumulada, por lugar de nacimiento")
-    print(f"  Censos sumados: {', '.join(str(c) for c in censos)}")
-    territorio = [c for c in censos if cve in TERRITORIOS.get(c, ())]
-    if territorio:
-        print(f"  Nota: era territorio federal en: {', '.join(str(c) for c in territorio)}")
-    print("═" * 72)
+    print(f"  Rango solicitado: {censos[0]}–{censos[-1]} → usando censo destino {censo_destino}")
+    print("  (el stock de migración por nacimiento es acumulado a cada fecha censal;")
+    print("   sumar varios censos duplicaría personas. Se reporta el más reciente del")
+    print("   rango, ya consistente con la población real de ese año.)")
 
-    _tabla(f"INMIGRANTES — suma de {len(censos)} censos", inm, "origen", n_inm, top)
-    _tabla(f"EMIGRANTES — suma de {len(censos)} censos", emi, "destino", n_emi, top)
+    inm, emi = detalle(df, cve, censo_destino, top)
 
-    print(f"\nSALDO NETO ACUMULADO (suma de los {len(censos)} censos): {n_inm - n_emi:+,}")
+    if len(censos) > 1:
+        print(f"{'─' * 72}")
+        print("Trayectoria dentro del rango (censos anteriores, no se suman):")
+        print(f"  {'Censo':<7} {'Población':>13} {'Inmigrantes':>13} {'Emigrantes':>13}"
+              f" {'Saldo':>13} {'% nac. fuera':>13}")
+        for censo in censos:
+            i, e, poblacion = flujos(df, cve, censo)
+            n_i, n_e = i["personas"].sum(), e["personas"].sum()
+            nota = " *" if cve in TERRITORIOS.get(censo, ()) else ""
+            print(f"  {censo:<7} {poblacion:>13,} {n_i:>13,} {n_e:>13,}"
+                  f" {n_i - n_e:>+13,} {n_i / poblacion * 100:>12.2f}%{nota}")
+        if any(cve in TERRITORIOS.get(c, ()) for c in censos):
+            print("  * territorio federal en ese censo, no estado")
+        print()
 
-    print(f"\n{'─' * 72}")
-    print("Nota: cada censo mide un stock (residentes nacidos fuera EN ESE MOMENTO), no")
-    print("un flujo entre censos. Sumar varias ediciones no cuenta personas únicas — quien")
-    print("nunca cambió de entidad aparece en cada censo en que se levantó. Usa esta cifra")
-    print("como magnitud acumulada de la serie, no como censo de individuos distintos.")
-    print()
     return inm, emi
 
 

@@ -2,12 +2,19 @@
 Movilidad de personas entre entidades federativas y extranjeros residentes,
 para una entidad y un año censal (o un rango de censos, acumulado).
 
-Reporta, según el censo elegido (1990, 2000, 2010 o 2020):
+Reporta, según el censo/encuesta elegido (1990, 2000, 2005, 2010, 2015 o 2020):
   · Inmigrantes — quiénes llegaron desde otra entidad en el quinquenio previo.
   · Emigrantes  — quiénes salieron hacia otra entidad en el mismo quinquenio.
   · Saldo neto migratorio interestatal y tasa por mil habitantes.
   · Extranjeros — flujo (residían en otro país hace 5 años, con desglose por país
     en 2020) y stock (nacidos en el extranjero).
+
+2005 (II Conteo) y 2015 (Encuesta Intercensal) rellenan parcialmente los huecos
+entre los 4 censos "completos". 2005 tiene la misma matriz origen-destino que los
+censos; 2015 es una encuesta MUESTRAL cuya fuente pública sólo trae agregados
+(población/inmigrantes/emigrantes/saldo) sin desglose por estado de origen ni
+por país — para ese año, las tablas de top-estados y la sección de extranjeros
+se muestran como "no disponible en esta fuente".
 
 La movilidad es la declarada en el censo (residencia actual vs. residencia 5 años
 antes), no una estimación indirecta como la de scripts/prepare_migracion_interna.py.
@@ -28,13 +35,17 @@ import polars as pl
 
 RAIZ = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(RAIZ / "scripts" / "centralismo"))
+sys.path.insert(0, str(RAIZ / "scripts"))
 from comun import NOMBRE, normalizar_estado
+from prepare_ccpv_migracion import EMIGRANTES_AGREGADO
 
 DIR = RAIZ / "dashboard_data"
-CENSOS = [1990, 2000, 2010, 2020]
+CENSOS = [1990, 2000, 2005, 2010, 2015, 2020]
 VENTANA = {1990: "1985 → 1990", 2000: "enero 1995 → 2000",
-           2010: "junio 2005 → 2010", 2020: "marzo 2015 → marzo 2020"}
+           2005: "octubre 2000 → octubre 2005", 2010: "junio 2005 → 2010",
+           2015: "marzo 2010 → marzo 2015", 2020: "marzo 2015 → marzo 2020"}
 EXTRANJERO = ["En los Estados Unidos de América", "En otro país"]
+SIN_DESGLOSE = "(sin desglose por estado en esta fuente)"
 
 
 def _entidad(valor):
@@ -107,14 +118,26 @@ def flujos(mig, cve, censo):
     flujo = mig.filter((pl.col("censo") == censo) & (pl.col("concepto") == "residencia_5a"))
     desglose = flujo.filter(~pl.col("total_categoria"))
 
-    # Incluye la fila 'Entidad no especificada' (sólo 1990) para que el total cuadre
-    # con el agregado publicado de 'En otra entidad'. Esos casos no son atribuibles a
-    # un origen, así que no aparecen del lado de los emigrantes.
-    inm = (desglose.filter(pl.col("cve_destino") == cve)
-           .select(["origen", "personas"]).sort("personas", descending=True))
-    emi = (desglose.filter((pl.col("cve_origen") == cve) & (pl.col("cve_destino") > 0))
-           .select(["destino", "personas"]).sort("personas", descending=True))
-    assert inm["personas"].sum() == _agregado(flujo, cve, "En otra entidad")
+    if desglose.filter(pl.col("cve_destino") == cve).height == 0:
+        # Fuente sin matriz origen-destino (Encuesta Intercensal 2015): sólo hay
+        # totales agregados. Se representa como una única fila "placeholder" para
+        # que las tablas top-N y el total (personas.sum()) sigan funcionando sin
+        # ramificar el resto del archivo.
+        inm = pl.DataFrame({"origen": [SIN_DESGLOSE],
+                            "personas": [_agregado(flujo, cve, "En otra entidad")]},
+                           schema={"origen": pl.Utf8, "personas": pl.Int64})
+        emi = pl.DataFrame({"destino": [SIN_DESGLOSE],
+                            "personas": [_agregado(flujo, cve, EMIGRANTES_AGREGADO)]},
+                           schema={"destino": pl.Utf8, "personas": pl.Int64})
+    else:
+        # Incluye la fila 'Entidad no especificada' (sólo 1990) para que el total
+        # cuadre con el agregado publicado de 'En otra entidad'. Esos casos no son
+        # atribuibles a un origen, así que no aparecen del lado de los emigrantes.
+        inm = (desglose.filter(pl.col("cve_destino") == cve)
+               .select(["origen", "personas"]).sort("personas", descending=True))
+        emi = (desglose.filter((pl.col("cve_origen") == cve) & (pl.col("cve_destino") > 0))
+               .select(["destino", "personas"]).sort("personas", descending=True))
+        assert inm["personas"].sum() == _agregado(flujo, cve, "En otra entidad")
 
     poblacion = _agregado(flujo, cve, "Total")
     return inm, emi, poblacion, flujo
@@ -152,31 +175,37 @@ def detalle(mig, cve, censo, top):
     # ── Extranjeros ──────────────────────────────────────────────────────────
     print(f"\n{'─' * 72}\nEXTRANJEROS")
 
-    f_ext = {c: _agregado(flujo, cve, c) for c in EXTRANJERO}
-    print(f"\n  Flujo — residían en otro país en {VENTANA[censo].split(' → ')[0]}: "
-          f"{sum(f_ext.values()):,}")
-    if censo >= 2010:  # 1990 y 2000 no separan Estados Unidos del resto
-        for c, v in f_ext.items():
-            print(f"      {c:<38} {v:>12,}")
+    if flujo.filter(pl.col("categoria").is_in(EXTRANJERO)).height == 0:
+        print("\n  Flujo — no disponible en esta fuente (sólo migración interestatal).")
+    else:
+        f_ext = {c: _agregado(flujo, cve, c) for c in EXTRANJERO}
+        print(f"\n  Flujo — residían en otro país en {VENTANA[censo].split(' → ')[0]}: "
+              f"{sum(f_ext.values()):,}")
+        if censo >= 2005:  # 1990 y 2000 no separan Estados Unidos del resto
+            for c, v in f_ext.items():
+                print(f"      {c:<38} {v:>12,}")
 
     paises = pl.DataFrame(schema={"pais": pl.Utf8, "personas": pl.Int64})
     if censo == 2020:
         paises = paises_2020(cve, top)
 
     stock = mig.filter((pl.col("censo") == censo) & (pl.col("concepto") == "nacimiento"))
-    s_ext = {c: _agregado(stock, cve, c) for c in EXTRANJERO}
-    s_tot = sum(s_ext.values())
-    pob_total = _agregado(stock, cve, "Total")
-    print(f"\n  Stock — nacidos en el extranjero: {s_tot:,}"
-          f"  ({s_tot / pob_total * 100:.2f}% de la población total)")
-    if censo >= 2010:
-        for c, v in s_ext.items():
-            print(f"      {c:<38} {v:>12,}")
-    sexo = stock.filter(pl.col("total_categoria") & (pl.col("cve_destino") == cve)
-                        & pl.col("categoria").is_in(EXTRANJERO))
-    h, m = sexo["hombres"].sum(), sexo["mujeres"].sum()
-    if h and m:
-        print(f"      {'Hombres / Mujeres':<38} {h:>12,} / {m:,}")
+    if stock.height == 0:
+        print("\n  Stock — no disponible en esta fuente (no releva lugar de nacimiento).")
+    else:
+        s_ext = {c: _agregado(stock, cve, c) for c in EXTRANJERO}
+        s_tot = sum(s_ext.values())
+        pob_total = _agregado(stock, cve, "Total")
+        print(f"\n  Stock — nacidos en el extranjero: {s_tot:,}"
+              f"  ({s_tot / pob_total * 100:.2f}% de la población total)")
+        if censo >= 2005:
+            for c, v in s_ext.items():
+                print(f"      {c:<38} {v:>12,}")
+        sexo = stock.filter(pl.col("total_categoria") & (pl.col("cve_destino") == cve)
+                            & pl.col("categoria").is_in(EXTRANJERO))
+        h, m = sexo["hombres"].sum(), sexo["mujeres"].sum()
+        if h and m:
+            print(f"      {'Hombres / Mujeres':<38} {h:>12,} / {m:,}")
     print()
     return inm, emi, paises
 
@@ -219,6 +248,17 @@ def acumulado(mig, cve, censos, top):
     print("entre uno y otro (p. ej. 1990-1995, 2000-2005, 2010-2015). La suma es la")
     print("migración observada en las ventanas sumadas, no la migración continua del período.")
 
+    print(f"\n{'─' * 72}")
+    print("Balance por censo — migración, inmigración y población total:")
+    print(f"  {'Censo':<7} {'Población':>13} {'Inmigrantes':>13} {'Emigrantes':>13}"
+          f" {'Saldo neto':>13} {'Saldo ‰':>10}")
+    for censo in censos:
+        i, e, poblacion, _ = flujos(mig, cve, censo)
+        n_i, n_e = i["personas"].sum(), e["personas"].sum()
+        saldo = n_i - n_e
+        print(f"  {censo:<7} {poblacion:>13,} {n_i:>13,} {n_e:>13,}"
+              f" {saldo:>+13,} {saldo / poblacion * 1000:>9.2f}")
+
     # ── Extranjeros ──────────────────────────────────────────────────────────
     print(f"\n{'─' * 72}\nEXTRANJEROS")
 
@@ -228,9 +268,15 @@ def acumulado(mig, cve, censos, top):
     ext = flujo.group_by("categoria").agg(pl.col("personas").sum())
     total_ext = ext["personas"].sum()
     print(f"\n  Flujo — residían en otro país, suma de {len(censos)} censos: {total_ext:,}")
-    # 1990/2000 no separan EEUU del resto, así que desglosar mezclado con 2010/2020
+    sin_flujo_ext = [c for c in censos
+                     if mig.filter((pl.col("censo") == c) & (pl.col("concepto") == "residencia_5a")
+                                   & pl.col("categoria").is_in(EXTRANJERO)).height == 0]
+    if sin_flujo_ext:
+        print(f"      (sin flujo de extranjero en esta fuente para: "
+              f"{', '.join(str(c) for c in sin_flujo_ext)})")
+    # 1990/2000 no separan EEUU del resto, así que desglosar mezclado con 2005+
     # atribuiría de más a 'En otro país'. Sólo se desglosa si todos los censos separan.
-    if all(c >= 2010 for c in censos):
+    if all(c >= 2005 for c in censos if c not in sin_flujo_ext):
         for r in ext.sort("personas", descending=True).iter_rows(named=True):
             print(f"      {r['categoria']:<38} {r['personas']:>12,}")
 
@@ -244,6 +290,9 @@ def acumulado(mig, cve, censos, top):
     print(f"\n  Stock — nacidos en el extranjero, por censo (no se suma entre censos):")
     for censo in censos:
         stock = mig.filter((pl.col("censo") == censo) & (pl.col("concepto") == "nacimiento"))
+        if stock.height == 0:
+            print(f"      {censo:<10} no disponible en esta fuente")
+            continue
         s_tot = sum(_agregado(stock, cve, c) for c in EXTRANJERO)
         pob_total = _agregado(stock, cve, "Total")
         print(f"      {censo:<10} {s_tot:>12,}   ({s_tot / pob_total * 100:.2f}% de la población)")

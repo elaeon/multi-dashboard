@@ -27,7 +27,7 @@ import pandas as pd
 import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "centralismo"))
-from comun import NOMBRE
+from comun import NOMBRE, normalizar_estado
 
 RAIZ = Path(__file__).resolve().parents[1]
 DIR = RAIZ / "data" / "inegi" / "ccpv" / "migracion"
@@ -40,6 +40,7 @@ SPECS = [
     (1990, "CPyV90_Nal_Migracion.xlsx",         "CPyV90_Nal_MIG2",   "residencia_5a", 1985, 1),
     (2000, "CPyV2000_NAL_Migracion.xlsx",       "CPyV2000_Nal_MIG1", "nacimiento",    None, 1),
     (2000, "CPyV2000_NAL_Migracion.xlsx",       "CPyV2000_Nal_MIG3", "residencia_5a", 1995, 1),
+    (2005, "Cont2005_NAL_Migracion.xls",        "Cont2005_Nal_MIG1", "residencia_5a", 2000, 1),
     (2010, "04_02B_ESTATAL.xls",                None,                "nacimiento",    None, 0),
     (2010, "04_04B_ESTATAL.xls",                None,                "residencia_5a", 2005, 0),
     (2020, "cpv2020_b_eum_04_migracion.xlsx",   "02",                "nacimiento",    None, 0),
@@ -58,6 +59,7 @@ CATEGORIA = {
     "Nacidos en otra entidad":          "En otra entidad",
     "Residentes en otra entidad":       "En otra entidad",
     "En los Estados Unidos de América": "En los Estados Unidos de América",
+    "En Estados Unidos de América":     "En los Estados Unidos de América",
     "En otro país":                     "En otro país",
     "Nacidos en otro país":             "En otro país",
     "Residentes en otro país":          "En otro país",
@@ -65,6 +67,13 @@ CATEGORIA = {
 }
 
 NACIONAL = {"Estados Unidos Mexicanos", "Total Nacional"}
+
+# Categoría exclusiva de leer_intercensal2015_agregado(): la Encuesta Intercensal
+# 2015 no trae matriz origen-destino, así que el total de emigrantes no se puede
+# derivar transponiendo el desglose (como en las demás fuentes) — se guarda como
+# su propia categoría, fuera de la partición Total = En la entidad + En otra
+# entidad + ... (no se debe sumar junto con ésas).
+EMIGRANTES_AGREGADO = "Emigrantes (agregado)"
 
 
 def _entero(v):
@@ -94,14 +103,15 @@ def _cve(etiqueta):
         cve = int(s[:2])
         if 1 <= cve <= 32:
             return cve
-    return None
+    return normalizar_estado(s)
 
 
 def _filas(archivo, hoja):
     """Devuelve las filas crudas del tabulado como listas de celdas."""
     ruta = DIR / archivo
     if ruta.suffix == ".xls":  # BIFF8: openpyxl no lo abre
-        df = pd.read_excel(ruta, header=None, dtype=object)
+        kwargs = {} if hoja is None else {"sheet_name": hoja}
+        df = pd.read_excel(ruta, header=None, dtype=object, **kwargs)
         return df.values.tolist()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -215,6 +225,46 @@ def leer_paises_2020():
     return df
 
 
+def leer_intercensal2015_agregado():
+    """04_migracion.xls, hoja "06" — Encuesta Intercensal 2015.
+
+    A diferencia de los censos, esta encuesta MUESTRAL no publica la matriz
+    origen-destino por entidad: sólo trae, por entidad, población/inmigrantes/
+    emigrantes/saldo agregados (fila Estimador == 'Valor'). Se homologa al
+    esquema de leer_tabulado() con 3 filas total_categoria por entidad (Total /
+    En otra entidad / EMIGRANTES_AGREGADO) y CERO filas de desglose por origen.
+    """
+    ruta = DIR / "04_migracion.xls"
+    filas = []
+    datos = pd.read_excel(ruta, sheet_name="06", header=None, dtype=object).values.tolist()
+    for fila in datos:
+        entidad, sexo, estimador = fila[0], fila[1], fila[2]
+        if sexo != "Total" or estimador != "Valor":
+            continue
+        cve = _cve(entidad)
+        if cve is None:
+            continue
+        poblacion, inm, emi = _entero(fila[3]), _entero(fila[4]), _entero(fila[5])
+        for categoria, valor in [("Total", poblacion), ("En otra entidad", inm),
+                                  (EMIGRANTES_AGREGADO, emi)]:
+            filas.append({
+                "censo": 2015, "concepto": "residencia_5a", "año_ref": 2010,
+                "cve_destino": cve, "destino": NOMBRE.get(cve, "Nacional"),
+                "categoria": categoria, "total_categoria": True,
+                "cve_origen": None, "origen": None,
+                "personas": valor, "hombres": None, "mujeres": None,
+            })
+
+    df = pl.DataFrame(filas, schema={
+        "censo": pl.Int16, "concepto": pl.Utf8, "año_ref": pl.Int16,
+        "cve_destino": pl.Int16, "destino": pl.Utf8, "categoria": pl.Utf8,
+        "total_categoria": pl.Boolean, "cve_origen": pl.Int16, "origen": pl.Utf8,
+        "personas": pl.Int64, "hombres": pl.Int64, "mujeres": pl.Int64,
+    })
+    print(f"  2015 residencia_5a    04_migracion.xls (hoja 06, agregado) {df.height:>6,} filas")
+    return df
+
+
 def validar(mig, paises):
     for (censo, concepto), g in mig.group_by(["censo", "concepto"], maintain_order=True):
         estados = g.filter(pl.col("cve_destino") > 0)
@@ -223,6 +273,11 @@ def validar(mig, paises):
 
         agregado = g.filter(pl.col("total_categoria"))
         desglose = g.filter(~pl.col("total_categoria"))
+
+        if desglose.height == 0:
+            # Fuente agregada sin matriz origen-destino (Encuesta Intercensal
+            # 2015): sólo se valida con las cifras nacionales de `esperado` abajo.
+            continue
 
         # a) Las categorías deben sumar la fila 'Total' de cada entidad.
         partes = (
@@ -282,17 +337,28 @@ def validar(mig, paises):
         (2010, "residencia_5a", "En otra entidad"):   3_292_310,
         (2000, "residencia_5a", "En otra entidad"):   3_584_957,
         (1990, "residencia_5a", "En otra entidad"):   3_477_237,
+        (2005, "residencia_5a", "Total"):             90_266_425,
+        (2005, "residencia_5a", "En otra entidad"):    2_410_407,
+        (2015, "residencia_5a", "Total"):             107_396_355,
+        (2015, "residencia_5a", "En otra entidad"):     3_197_619,
     }
     for (censo, concepto, cat), val in esperado.items():
         obt = nacional(censo, concepto, cat)
         assert obt == val, f"{censo}/{concepto}/{cat}: {obt:,} != {val:,}"
     print(f"  {len(esperado)} cifras nacionales de INEGI verificadas")
 
+    # 2015: sin matriz, inmigrantes nacionales debe igualar emigrantes nacionales
+    # (por construcción — es la misma migración interna vista desde ambos lados).
+    inm_nal = nacional(2015, "residencia_5a", "En otra entidad")
+    emi_nal = nacional(2015, "residencia_5a", EMIGRANTES_AGREGADO)
+    assert inm_nal == emi_nal == 3_197_619, f"2015: inmigrantes {inm_nal:,} != emigrantes {emi_nal:,}"
+    print(f"  2015: inmigrantes = emigrantes = {inm_nal:,} (auto-consistencia nacional)")
+
 
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     print("Tabulados estatales:")
-    mig = pl.concat([leer_tabulado(*s) for s in SPECS])
+    mig = pl.concat([leer_tabulado(*s) for s in SPECS] + [leer_intercensal2015_agregado()])
     print("Desglose por país:")
     paises = leer_paises_2020()
 
