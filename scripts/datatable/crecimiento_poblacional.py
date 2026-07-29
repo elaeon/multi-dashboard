@@ -29,8 +29,9 @@ contigüidad geográfica) y reporta población y share por región — para ver 
 tan concentrada está la población en ciertas zonas del país. Usa --año (default
 2020) y es incompatible con --entidad (es un reporte nacional). Baja California
 y Baja California Sur no tienen frontera terrestre con el continente (Golfo de
-California de por medio); se tratan como vecinas de Sonora y Sinaloa para que
-el país quede como un solo bloque conexo.
+California de por medio); cada una se trata como vecina sólo de la entidad más
+cercana al otro lado del golfo (Baja California de Sonora, Baja California Sur
+de Sinaloa) para que el país quede como un solo bloque conexo.
 
 --mapa (junto con --clusters) genera un choropleth HTML interactivo, coloreado
 por la población/share de cada cluster (escala de calor continua — todos los
@@ -42,6 +43,12 @@ estados de un mismo cluster comparten color).
 depende del año), así que a diferencia de --clusters (una foto de un año) esto
 muestra el crecimiento de cada región a través del tiempo. Incompatible con
 --entidad.
+
+--c_positivo X reporta las entidades cuya TCMA nunca bajó de X en ningún
+intercensal del rango dado por --año, reducidas al subconjunto más grande que
+no comparte frontera entre sí (VECINOS) — prioriza por el peor (mínimo) TCMA
+de cada entidad. --año admite un censo suelto (usa 1895 hasta ese censo) o un
+rango explícito 'AAAA-AAAA'. Incompatible con --entidad.
 
 Run: uv run python scripts/datatable/crecimiento_poblacional.py --entidad Jalisco
      uv run python scripts/datatable/crecimiento_poblacional.py --entidad Jalisco --proyeccion
@@ -77,11 +84,14 @@ CENSOS = [1895, 1900, 1910, 1921, 1930, 1940, 1950, 1960, 1970, 1980, 1990, 2000
 # Vecindad terrestre real de las 32 entidades (curada a mano — no hay geopandas/
 # shapely instalado ni tabla de adyacencia ya preparada en el repo). Baja
 # California y Baja California Sur no tienen frontera terrestre con el
-# continente (separadas por el Golfo de California); se agrega un puente hacia
-# Sonora y Sinaloa (sus vecinos más cercanos) para que el país quede como un
-# solo bloque conexo — sin ese puente, K=1 sería geográficamente imposible.
+# continente (separadas por el Golfo de California); cada una se conecta sólo
+# con su vecino más cercano al otro lado del golfo — Baja California con
+# Sonora (extremo norte, más angosto), Baja California Sur con Sinaloa
+# (extremo sur) — para que el país quede como un solo bloque conexo, sin
+# agregar el cruce más ancho e improbable de cada extremo (Baja California
+# con Sinaloa, Baja California Sur con Sonora).
 VECINOS = {
-    1: {14, 32}, 2: {3, 25, 26}, 3: {2, 25, 26}, 4: {7, 23, 27, 31},
+    1: {14, 32}, 2: {3, 26}, 3: {2, 25}, 4: {7, 23, 27, 31},
     5: {8, 10, 19, 32}, 6: {14, 16}, 7: {4, 20, 27, 30}, 8: {5, 10, 25, 26},
     9: {15, 17}, 10: {5, 8, 18, 25, 32}, 11: {14, 16, 22, 24, 32},
     12: {15, 16, 17, 20, 21}, 13: {15, 21, 22, 24, 29, 30},
@@ -89,7 +99,7 @@ VECINOS = {
     16: {6, 11, 12, 14, 15, 22}, 17: {9, 12, 15, 21}, 18: {10, 14, 25, 32},
     19: {5, 24, 28, 32}, 20: {7, 12, 21, 30}, 21: {12, 13, 15, 17, 20, 29, 30},
     22: {11, 13, 15, 16, 24}, 23: {4, 31}, 24: {11, 13, 19, 22, 28, 30, 32},
-    25: {2, 3, 8, 10, 18, 26}, 26: {2, 3, 8, 25}, 27: {4, 7, 30},
+    25: {3, 8, 10, 18, 26}, 26: {2, 8, 25}, 27: {4, 7, 30},
     28: {19, 24, 30}, 29: {13, 15, 21}, 30: {7, 13, 20, 21, 24, 27, 28},
     31: {4, 23}, 32: {1, 5, 10, 11, 14, 18, 19, 24},
 }
@@ -232,6 +242,25 @@ def _censo(valor):
     return n
 
 
+def _año_o_rango(valor):
+    """Un censo suelto ('1980') o un rango inclusivo ('1950-1980') → int o
+    tupla (lo, hi). Sólo --c_positivo interpreta el rango; los demás modos
+    (--clusters, tabla nacional) exigen un censo suelto."""
+    if "-" in valor:
+        partes = valor.split("-")
+        if len(partes) != 2:
+            raise argparse.ArgumentTypeError(f"rango inválido: {valor!r} (usa 'AAAA-AAAA')")
+        try:
+            lo, hi = sorted(int(p) for p in partes)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"rango inválido: {valor!r} (usa 'AAAA-AAAA')")
+        if lo not in CENSOS or hi not in CENSOS:
+            raise argparse.ArgumentTypeError(
+                f"rango inválido: {valor!r} (los extremos deben ser censos de {CENSOS})")
+        return (lo, hi)
+    return _censo(valor)
+
+
 def tabla_nacional(df, año):
     """Población, share nacional y diferencia vs. el censo anterior, para las
     32 entidades, en un año censal dado."""
@@ -324,6 +353,36 @@ def _conectado(cves, vecinos) -> bool:
                 visitados.add(v)
                 pendientes.append(v)
     return visitados == cves
+
+
+def entidades_consistentes(df, lo, hi, umbral) -> pl.DataFrame:
+    """Entidades cuya TCMA nunca bajó de `umbral` en ningún intercensal entre
+    `lo` y `hi`, reducidas al subconjunto no-contiguo más grande dado ese
+    orden de prioridad: se ordenan por su peor (mínimo) TCMA descendente —
+    la entidad con el peor período más alto entra primero — y se recorre esa
+    lista añadiendo una entidad sólo si ninguna de sus vecinas (VECINOS) ya
+    fue añadida."""
+    sub = df.filter((pl.col("año") >= lo) & (pl.col("año") <= hi))
+    candidatas = []
+    for cve in range(1, 33):
+        tcmas = calcular(sub, cve)["tcma_pct"].drop_nulls().to_list()
+        if not tcmas or min(tcmas) < umbral:
+            continue
+        candidatas.append({"cve_ent": cve, "entidad": NOMBRE[cve], "n_periodos": len(tcmas),
+                           "tcma_min": min(tcmas), "tcma_mean": sum(tcmas) / len(tcmas)})
+    candidatas.sort(key=lambda f: f["tcma_min"], reverse=True)
+
+    seleccion = []
+    for f in candidatas:
+        if any(f["cve_ent"] in VECINOS[s] for s in seleccion):
+            continue
+        seleccion.append(f["cve_ent"])
+
+    filas = [f for f in candidatas if f["cve_ent"] in seleccion]
+    return pl.DataFrame(filas, schema={
+        "cve_ent": pl.Int16, "entidad": pl.Utf8, "n_periodos": pl.Int16,
+        "tcma_min": pl.Float64, "tcma_mean": pl.Float64,
+    })
 
 
 def agrupar(k) -> dict:
@@ -491,12 +550,19 @@ def main():
     p.add_argument("--entidad", type=_entidad, default=None,
                    help="Nombre o clave INEGI (1-32) de la entidad federativa. Si se omite, "
                         "se muestra la tabla nacional de las 32 entidades para --año")
-    p.add_argument("--año", type=_censo, default=CENSOS[-1],
+    p.add_argument("--año", type=_año_o_rango, default=CENSOS[-1],
                    help="Censo a usar en la tabla nacional o --clusters (sin --entidad); "
-                        f"default el último censo, {CENSOS[-1]}")
+                        f"default el último censo, {CENSOS[-1]}. Con --c_positivo también "
+                        "acepta un rango 'AAAA-AAAA'")
     p.add_argument("--clusters", type=_k, default=None,
                    help="Agrupa las 32 entidades en N regiones de estados vecinos (1-32) y "
                         "reporta población/share por región, para --año. Incompatible con "
+                        "--entidad")
+    p.add_argument("--c_positivo", type=float, default=None,
+                   help="Entidades cuya TCMA nunca bajó de X en ningún intercensal, reducidas "
+                        "al subconjunto que no comparte frontera entre sí (VECINOS). Usa --año "
+                        "como rango: un censo suelto ('1980') usa 1895-ese censo; un rango "
+                        "explícito ('1950-1980') usa sólo esas fechas. Incompatible con "
                         "--entidad")
     p.add_argument("--regiones", type=_k, default=None,
                    help="Igual que --clusters, pero reporta la trayectoria histórica (los 14 "
@@ -526,8 +592,36 @@ def main():
 
     if (a.mapa or a.mapa_union) and a.clusters is None:
         p.error("--mapa/--mapa-union requieren --clusters")
+    if isinstance(a.año, tuple) and a.c_positivo is None:
+        p.error("--año como rango ('AAAA-AAAA') sólo aplica a --c_positivo")
 
     censo_df = leer_poblacion_historica()
+
+    if a.c_positivo is not None:
+        if a.entidad is not None:
+            p.error("--c_positivo es incompatible con --entidad (es un reporte nacional)")
+        lo, hi = a.año if isinstance(a.año, tuple) else (CENSOS[0], a.año)
+        tabla = entidades_consistentes(censo_df, lo, hi, a.c_positivo)
+
+        print(f"\n{'═' * 68}")
+        print(f"  Entidades no contiguas con TCMA ≥ {a.c_positivo:+.2f}% en cada intercensal,"
+              f" {lo}-{hi}")
+        print("═" * 68)
+        if tabla.height == 0:
+            print("\n  Ninguna entidad cumple el umbral en este rango.\n")
+        else:
+            print(f"  {'#':>3}  {'Entidad':<22} {'TCMA mínimo':>13} {'TCMA promedio':>15}"
+                  f" {'Periodos':>9}")
+            for i, r in enumerate(tabla.iter_rows(named=True), start=1):
+                print(f"  {i:>3}  {r['entidad']:<22} {_fmt(r['tcma_min'], 2, signo=True, sufijo='%'):>13}"
+                      f" {_fmt(r['tcma_mean'], 2, signo=True, sufijo='%'):>15} {r['n_periodos']:>9}")
+            print()
+
+        if a.guardar:
+            ruta = DIR / f"crecimiento_consistente_{lo}_{hi}_{a.c_positivo}.parquet"
+            tabla.write_parquet(ruta)
+            print(f"Saved → {ruta}  ({tabla.height:,} filas)\n")
+        return
 
     if a.regiones is not None:
         if a.entidad is not None:

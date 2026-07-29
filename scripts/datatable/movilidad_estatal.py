@@ -23,15 +23,29 @@ Fuente: dashboard_data/ccpv_migracion_estatal.parquet y
         dashboard_data/ccpv_extranjeros_pais_2020.parquet
         (generadas por scripts/prepare_ccpv_migracion.py)
 
+--convergencia agrupa las 32 entidades por similitud de PERFIL de movilidad
+del quinquenio (no por volumen): estados de origen que mandan a sus
+emigrantes preferentemente a los mismos destinos ("emigración"), y entidades
+de destino que reciben inmigrantes de las mismas fuentes ("inmigración"). K
+se fija con --k, o se autodetecta (silhouette score) si se omite. 2015
+(Encuesta Intercensal) no trae matriz origen-destino y se excluye del
+default; --año 2015 con --convergencia se rechaza explícitamente.
+
 Run: uv run python scripts/datatable/movilidad_estatal.py --entidad Jalisco --año 2020
      uv run python scripts/datatable/movilidad_estatal.py --entidad Jalisco --año 1990-2020
+     uv run python scripts/datatable/movilidad_estatal.py --convergencia
+     uv run python scripts/datatable/movilidad_estatal.py --convergencia --año 2020 --k 5
 """
 
 import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
 import polars as pl
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.metrics import silhouette_score
+from sklearn.metrics.pairwise import cosine_similarity
 
 RAIZ = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(RAIZ / "scripts" / "centralismo"))
@@ -41,6 +55,7 @@ from prepare_ccpv_migracion import EMIGRANTES_AGREGADO
 
 DIR = RAIZ / "dashboard_data"
 CENSOS = [1990, 2000, 2005, 2010, 2015, 2020]
+CENSOS_CONVERGENCIA = tuple(c for c in CENSOS if c != 2015)
 VENTANA = {1990: "1985 → 1990", 2000: "enero 1995 → 2000",
            2005: "octubre 2000 → octubre 2005", 2010: "junio 2005 → 2010",
            2015: "marzo 2010 → marzo 2015", 2020: "marzo 2015 → marzo 2020"}
@@ -82,6 +97,16 @@ def _año_o_rango(valor):
     if censo not in CENSOS:
         raise argparse.ArgumentTypeError(f"censo no disponible: {censo} (elige entre {CENSOS})")
     return censo
+
+
+def _k(valor):
+    try:
+        n = int(valor)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"k inválido: {valor!r} (usa un entero, p. ej. 5)")
+    if n < 2:
+        raise argparse.ArgumentTypeError(f"k inválido: {n} (debe ser >= 2)")
+    return n
 
 
 def _tabla(titulo, df, col, total, top):
@@ -300,20 +325,160 @@ def acumulado(mig, cve, censos, top):
     return inm, emi, paises
 
 
+def _matriz_flujo(mig, censo):
+    """Matriz cuadrada origen×destino (personas) del quinquenio de un censo:
+    sólo migración a otra entidad con origen conocido (excluye "Entidad no
+    especificada"). Devuelve la lista ordenada de claves y la matriz."""
+    if censo not in CENSOS_CONVERGENCIA:
+        raise SystemExit(
+            f"El censo {censo} no trae matriz origen-destino en esta fuente "
+            f"(sólo agregados) — --convergencia no aplica. Censos disponibles: "
+            f"{list(CENSOS_CONVERGENCIA)}")
+    g = (mig.filter((pl.col("censo") == censo) & (pl.col("concepto") == "residencia_5a")
+                    & (pl.col("categoria") == "En otra entidad") & ~pl.col("total_categoria")
+                    & pl.col("cve_origen").is_not_null() & (pl.col("cve_destino") > 0))
+         .select(["cve_origen", "cve_destino", "personas"]))
+    cves = sorted(set(g["cve_origen"].to_list()) | set(g["cve_destino"].to_list()))
+    idx = {c: i for i, c in enumerate(cves)}
+    matriz = np.zeros((len(cves), len(cves)))
+    for o, d, personas in g.iter_rows():
+        matriz[idx[o], idx[d]] = personas
+    return cves, matriz
+
+
+def _perfiles(matriz, eje):
+    """Normaliza cada fila (eje='origen': % de los emigrantes de ese estado
+    que va a cada destino) o cada columna (eje='destino': % de los
+    inmigrantes de ese estado que viene de cada origen) para que sumen 1 —
+    perfil de PREFERENCIA, no de volumen."""
+    m = matriz if eje == "origen" else matriz.T
+    sumas = m.sum(axis=1, keepdims=True)
+    sumas[sumas == 0] = 1
+    return m / sumas
+
+
+def _clusterizar(perfiles, k):
+    """Agrupa filas de `perfiles` por similitud coseno (distancia = 1 -
+    similitud). Con k dado, clustering jerárquico manual; con k=None, prueba
+    k=2..10 y elige el que maximiza el silhouette score (automático)."""
+    dist = np.clip(1 - cosine_similarity(perfiles), 0, None)
+    np.fill_diagonal(dist, 0)
+    if k is not None:
+        etiquetas = AgglomerativeClustering(
+            n_clusters=k, metric="precomputed", linkage="average").fit_predict(dist)
+        return etiquetas, k, silhouette_score(dist, etiquetas, metric="precomputed")
+
+    mejor = None
+    for candidato in range(2, min(10, len(perfiles) - 1) + 1):
+        etiquetas = AgglomerativeClustering(
+            n_clusters=candidato, metric="precomputed", linkage="average").fit_predict(dist)
+        score = silhouette_score(dist, etiquetas, metric="precomputed")
+        if mejor is None or score > mejor[2]:
+            mejor = (etiquetas, candidato, score)
+    return mejor
+
+
+def convergencia(mig, censo, k, top):
+    """Agrupa las entidades de un censo por similitud de perfil de movilidad
+    del quinquenio: 'emigracion' (mismos destinos preferentes) e
+    'inmigracion' (mismas fuentes preferentes). Imprime, por grupo, sus
+    miembros y el/los destino(s)/origen(es) compartido(s) dominante(s).
+    Devuelve {direccion: {cve_ent: cluster_id}} para --guardar."""
+    cves, matriz = _matriz_flujo(mig, censo)
+    nombre = {c: NOMBRE[c] for c in cves}
+    resultado = {}
+
+    print(f"\n{'═' * 78}")
+    print(f"  Convergencia de movilidad interestatal — Censo {censo} ({VENTANA[censo]})")
+    print("  Agrupamiento por perfil de preferencia (no por volumen)")
+    print("═" * 78)
+
+    direcciones = [
+        ("origen", "emigracion",
+         "EMIGRACIÓN — estados que comparten los mismos destinos preferentes",
+         "Destino(s) compartido(s)"),
+        ("destino", "inmigracion",
+         "INMIGRACIÓN — estados que comparten las mismas fuentes preferentes",
+         "Origen(es) compartido(s)"),
+    ]
+    for eje, clave, titulo, etiqueta_contraparte in direcciones:
+        perfiles = _perfiles(matriz, eje)
+        etiquetas, k_usado, score = _clusterizar(perfiles, k)
+        resultado[clave] = {int(c): int(e) for c, e in zip(cves, etiquetas)}
+
+        print(f"\n  {titulo}")
+        if k is None:
+            print(f"  (k={k_usado} elegido automáticamente vía silhouette score = {score:.3f})")
+        grupos = {}
+        for cve, etq in zip(cves, etiquetas):
+            grupos.setdefault(int(etq), []).append(cve)
+
+        for cluster_id in sorted(grupos):
+            miembros = grupos[cluster_id]
+            print(f"\n    Grupo {cluster_id + 1}: {', '.join(sorted(nombre[c] for c in miembros))}")
+            perfil_medio = perfiles[[cves.index(c) for c in miembros]].mean(axis=0)
+            print(f"      {etiqueta_contraparte} (promedio del grupo):")
+            for i in np.argsort(perfil_medio)[::-1][:top]:
+                if perfil_medio[i] <= 0:
+                    continue
+                print(f"        {nombre[cves[i]]:<24} {perfil_medio[i] * 100:>6.1f}%")
+    print()
+    return resultado
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--entidad", type=_entidad, required=True,
-                   help="Nombre o clave INEGI (1-32) de la entidad federativa")
-    p.add_argument("--año", type=_año_o_rango, required=True,
-                   help="Año censal, o rango 'AAAA-AAAA' para el acumulado de varios censos")
+    p.add_argument("--entidad", type=_entidad, default=None,
+                   help="Nombre o clave INEGI (1-32) de la entidad federativa "
+                        "(obligatorio salvo con --convergencia)")
+    p.add_argument("--año", type=_año_o_rango,
+                   help="Año censal, o rango 'AAAA-AAAA' para el acumulado de varios censos "
+                        "(obligatorio salvo con --convergencia; con --convergencia, default "
+                        f"{CENSOS_CONVERGENCIA[0]}-{CENSOS_CONVERGENCIA[-1]}, excluye 2015)")
     p.add_argument("--top", type=int, default=10, help="Filas por tabla (default 10)")
+    p.add_argument("--convergencia", action="store_true",
+                   help="Agrupa las 32 entidades por similitud de perfil de movilidad "
+                        "(destinos preferentes en emigración, fuentes preferentes en "
+                        "inmigración) en vez de reportar una sola entidad. Incompatible "
+                        "con --entidad; no aplica a 2015 (sin matriz origen-destino)")
+    p.add_argument("--k", type=_k, default=None,
+                   help="Número de grupos para --convergencia. Si se omite, se "
+                        "autodetecta vía silhouette score (k=2..10)")
     p.add_argument("--guardar", action="store_true",
-                   help="Escribe el resultado a dashboard_data/movilidad_<entidad>_<año>.parquet")
+                   help="Escribe el resultado a dashboard_data/movilidad_<entidad>_<año>.parquet "
+                        "(o dashboard_data/convergencia_movilidad_<direccion>_<censo>.parquet "
+                        "con --convergencia)")
     a = p.parse_args()
-    cve, top = a.entidad, a.top
+    if a.convergencia and a.entidad is not None:
+        p.error("--convergencia es incompatible con --entidad (es un reporte cruzado de las 32 entidades)")
+    if not a.convergencia and a.entidad is None:
+        p.error("se requiere --entidad (o usa --convergencia)")
+    if not a.convergencia and a.año is None:
+        p.error("se requiere --año")
 
     mig = cargar()
+
+    if a.convergencia:
+        censos = (list(a.año) if isinstance(a.año, tuple)
+                  else [a.año] if a.año else list(CENSOS_CONVERGENCIA))
+        for censo in censos:
+            resultado = convergencia(mig, censo, a.k, a.top)
+            if a.guardar:
+                for direccion, asignacion in resultado.items():
+                    salida = pl.DataFrame({
+                        "censo": [censo] * len(asignacion),
+                        "cve_ent": list(asignacion.keys()),
+                        "entidad": [NOMBRE[c] for c in asignacion],
+                        "direccion": [direccion] * len(asignacion),
+                        "cluster_id": list(asignacion.values()),
+                    })
+                    ruta = DIR / f"convergencia_movilidad_{direccion}_{censo}.parquet"
+                    salida.write_parquet(ruta)
+                    print(f"Saved → {ruta}  ({salida.height:,} filas)\n")
+        return
+
+    cve, top = a.entidad, a.top
     if isinstance(a.año, tuple):
         inm, emi, paises = acumulado(mig, cve, list(a.año), top)
         etiqueta_año = f"{a.año[0]}-{a.año[-1]}"
