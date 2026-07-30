@@ -15,14 +15,16 @@ la de su nacimiento (nacimiento).
 Fuente: dashboard_data/ccpv_nacimiento_estatal.parquet
         (generada por scripts/prepare_ccpv_nacimiento.py)
 
---convergencia agrupa las 32 entidades por similitud de PERFIL migratorio en
-vez de reportar una sola entidad: estados de origen que mandan a sus
-emigrantes preferentemente a los mismos destinos ("emigración"), y entidades
-de destino que reciben inmigrantes de las mismas fuentes ("inmigración"). Se
-agrupa por preferencia (% del flujo de cada estado), no por volumen — así un
-estado chico y uno grande con el mismo patrón de destino caen en el mismo
-grupo. El número de grupos K se fija con --k, o se autodetecta (silhouette
-score) si se omite. Por default cubre los 4 censos 1950-1980.
+--convergencia agrupa las 32 entidades en UN solo conjunto de clusters (no
+por volumen) en vez de reportar una sola entidad. El perfil de cada entidad
+se recorta primero a sus contrapartes candidatas: las que están
+simultáneamente en su top-`--accum`% de inmigración Y de emigración (misma
+intersección que se muestra sin --inmigracion/--emigracion en el reporte de
+una sola entidad); el perfil de agrupamiento es el promedio de su perfil de
+emigración y de inmigración sobre esas candidatas — ya no dos agrupamientos
+separados por dirección. El número de grupos K se fija con --k, o se
+autodetecta (silhouette score) si se omite. Por default cubre los 4 censos
+1950-1980.
 
 --inmigracion/--emigracion no requieren --map: filtran el reporte a mostrar
 sólo esa dirección. Con --entidad, filtran cuál de las dos tablas (llegadas/
@@ -36,10 +38,11 @@ censo suelto. --map geo (default) dibuja arcos sobre el mapa real de México
 un diagrama de bandas — ambos requieren --entidad y exactamente uno de
 --inmigracion (orígenes que le mandan migrantes) o --emigracion (destinos
 hacia donde emigra). --map chord también acepta --entidad + dirección (la
-misma entidad y sus --top contrapartes, dibujadas como cuerdas en círculo en
-vez de bandas), pero a diferencia de geo/sankey --entidad es OPCIONAL: si se
-omite, genera un chord diagram NACIONAL con los --top flujos más grandes
-entre cualquier par de entidades.
+misma entidad y las contrapartes necesarias para acumular --accum% del
+volumen, dibujadas como cuerdas en círculo en vez de bandas), pero a
+diferencia de geo/sankey --entidad es OPCIONAL: si se omite, genera un
+chord diagram NACIONAL con los flujos necesarios para acumular --accum%
+del volumen total entre cualquier par de entidades.
 
 ── movilidad ─────────────────────────────────────────────────────────────────
 Reporta, según el censo/encuesta elegido (1990, 2000, 2005, 2010, 2015 o 2020):
@@ -63,13 +66,17 @@ Fuente: dashboard_data/ccpv_migracion_estatal.parquet y
         dashboard_data/ccpv_extranjeros_pais_2020.parquet
         (generadas por scripts/prepare_ccpv_migracion.py)
 
---convergencia agrupa las 32 entidades por similitud de PERFIL de movilidad
-del quinquenio (no por volumen): estados de origen que mandan a sus
-emigrantes preferentemente a los mismos destinos ("emigración"), y entidades
-de destino que reciben inmigrantes de las mismas fuentes ("inmigración"). K
-se fija con --k, o se autodetecta (silhouette score) si se omite. 2015
-(Encuesta Intercensal) no trae matriz origen-destino y se excluye del
-default; --año 2015 con --convergencia se rechaza explícitamente.
+--convergencia agrupa las 32 entidades en UN solo conjunto de clusters (no
+por volumen) por perfil de movilidad del quinquenio. El perfil de cada
+entidad se recorta primero a sus contrapartes candidatas: las que están
+simultáneamente en su top-`--accum`% de inmigración Y de emigración (misma
+intersección que se muestra sin --inmigracion/--emigracion en el reporte de
+una sola entidad); el perfil de agrupamiento es el promedio de su perfil de
+emigración y de inmigración sobre esas candidatas — ya no dos agrupamientos
+separados por dirección. K se fija con --k, o se autodetecta (silhouette
+score) si se omite. 2015 (Encuesta Intercensal) no trae matriz
+origen-destino y se excluye del default; --año 2015 con --convergencia se
+rechaza explícitamente.
 
 --inmigracion/--emigracion no requieren --map: filtran el reporte a mostrar
 sólo esa dirección. Con --entidad, filtran cuál de las dos tablas (llegadas/
@@ -83,10 +90,11 @@ dibuja arcos sobre el mapa real de México; --map sankey dibuja un diagrama
 de bandas — ambos requieren --entidad y exactamente uno de --inmigracion
 (orígenes que le mandan gente en el quinquenio) o --emigracion (destinos
 hacia donde se fue). --map chord también acepta --entidad + dirección (la
-misma entidad y sus --top contrapartes, dibujadas como cuerdas en círculo en
-vez de bandas), pero a diferencia de geo/sankey --entidad es OPCIONAL: si se
-omite, genera un chord diagram NACIONAL con los --top flujos más grandes
-entre cualquier par de entidades.
+misma entidad y las contrapartes necesarias para acumular --accum% del
+volumen, dibujadas como cuerdas en círculo en vez de bandas), pero a
+diferencia de geo/sankey --entidad es OPCIONAL: si se omite, genera un
+chord diagram NACIONAL con los flujos necesarios para acumular --accum%
+del volumen total entre cualquier par de entidades.
 
 Run: uv run python scripts/datatable/movilidad_estatal.py nacimiento --entidad Jalisco --año 1970
      uv run python scripts/datatable/movilidad_estatal.py nacimiento --entidad cdmx --serie
@@ -202,43 +210,94 @@ def _k(valor):
     return n
 
 
-def _tabla(titulo, df, col, total, top, poblacion=None):
-    """Imprime top-N filas de (col, personas) con su % y % acumulado del total.
-    Si se pasa `poblacion` (población total de la entidad), agrega qué % de
-    ella representa `total`."""
+def _accum(valor):
+    try:
+        n = float(valor)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"accum inválido: {valor!r} (usa un número entre 0 y 100, p. ej. 80)")
+    if not (0 < n <= 100):
+        raise argparse.ArgumentTypeError(f"accum inválido: {n} (debe estar entre 0 y 100)")
+    return n
+
+
+def _n_hasta_accum(valores, total, accum):
+    """Cuántas de las primeras filas de `valores` (ya ordenados descendente)
+    hacen falta para acumular `accum`% de `total`. Siempre al menos 1 si
+    `total` > 0."""
+    if total == 0:
+        return len(valores)
+    acumulado = 0
+    for i, v in enumerate(valores, start=1):
+        acumulado += v
+        if acumulado / total * 100 >= accum:
+            return i
+    return len(valores)
+
+
+def _tabla(titulo, df, col, total, accum, poblacion=None):
+    """Imprime filas de (col, personas) hasta acumular `accum`% del total,
+    con su % y % acumulado. Si se pasa `poblacion` (población total de la
+    entidad), agrega qué % de ella representa `total`. Devuelve las filas
+    efectivamente mostradas (antes del "Resto")."""
     encabezado = f"\n{titulo}: {total:,}"
     if poblacion:
         encabezado += f"  ({total / poblacion * 100:.2f}% de la población de la entidad)"
     print(encabezado)
     if total == 0:
-        return
+        return df.head(0)
+    n = _n_hasta_accum(df["personas"].to_list(), total, accum)
     print(f"  {'#':>3}  {'':<34} {'Personas':>12} {'%':>7} {'% acum.':>8}")
     acumulado = 0
-    for i, r in enumerate(df.head(top).iter_rows(named=True), start=1):
+    for i, r in enumerate(df.head(n).iter_rows(named=True), start=1):
         acumulado += r["personas"]
         print(f"  {i:>3}  {r[col]:<34} {r['personas']:>12,} {r['personas']/total*100:>6.1f}%"
               f" {acumulado/total*100:>7.1f}%")
-    resto = df.slice(top)
+    resto = df.slice(n)
     if resto.height:
         suma = resto["personas"].sum()
         acumulado += suma
         print(f"  {'':>3}  {f'Resto ({resto.height})':<34} {suma:>12,} {suma/total*100:>6.1f}%"
               f" {acumulado/total*100:>7.1f}%")
+    return df.head(n)
+
+
+def _interseccion_flujos(filas_inm, filas_emi, accum):
+    """Imprime las entidades que aparecen en ambas tablas (inmigración Y
+    emigración) dentro del `accum`% acumulado de cada una. Sólo se llama
+    cuando se muestran ambas direcciones (sin --inmigracion ni
+    --emigracion). Excluye SIN_DESGLOSE (placeholder de fuentes sin matriz
+    origen-destino, como la Encuesta Intercensal 2015): no es una entidad."""
+    entidades_inm = {k: v for k, v in zip(filas_inm["origen"].to_list(), filas_inm["personas"].to_list())
+                      if k != SIN_DESGLOSE}
+    entidades_emi = {k: v for k, v in zip(filas_emi["destino"].to_list(), filas_emi["personas"].to_list())
+                      if k != SIN_DESGLOSE}
+    interseccion = sorted(set(entidades_inm) & set(entidades_emi),
+                           key=lambda e: entidades_inm[e] + entidades_emi[e], reverse=True)
+    print(f"\nINTERSECCIÓN INMIGRACIÓN ∩ EMIGRACIÓN (entidades dentro del {accum:g}% acumulado "
+          f"en ambas): {len(interseccion)}")
+    if interseccion:
+        print(f"  {'':<34} {'Inmigrantes':>12} {'Emigrantes':>12}")
+        for e in interseccion:
+            print(f"  {e:<34} {entidades_inm[e]:>12,} {entidades_emi[e]:>12,}")
 
 
 # ── Compartido: diagrama de flujo HTML (arcos geo / Sankey de 3 niveles) ───
 
-def mapa_flujo_geo(cve, censo, direccion, tabla, top, prefijo, ventana=None) -> Path:
+def mapa_flujo_geo(cve, censo, direccion, tabla, accum, prefijo, ventana=None) -> Path:
     """Arcos sobre el mapa de México entre el centroide de `cve` y los
     centroides de sus contrapartes (orígenes si direccion='inmigracion',
     destinos si 'emigracion'), grosor de línea proporcional a `personas`.
     Mismo estilo (carto-darkmatter, centroides de crecimiento_poblacional.py)
-    que --mapa de ese script. `prefijo` fija el nombre del archivo
-    (migracion_flujo_* / movilidad_flujo_*); `ventana` agrega el rango de
-    fechas del quinquenio al título (sólo lo usa el subcomando movilidad)."""
+    que --mapa de ese script. Dibuja las contrapartes necesarias para
+    acumular `accum`% del volumen total. `prefijo` fija el nombre del
+    archivo (migracion_flujo_* / movilidad_flujo_*); `ventana` agrega el
+    rango de fechas del quinquenio al título (sólo lo usa el subcomando
+    movilidad)."""
     cent = centroides()
     lon0, lat0 = cent[cve]
-    filas = tabla.head(top)
+    n = _n_hasta_accum(tabla["personas"].to_list(), tabla["personas"].sum(), accum)
+    filas = tabla.head(n)
     max_personas = filas["personas"].max()
 
     fig = go.Figure()
@@ -264,8 +323,8 @@ def mapa_flujo_geo(cve, censo, direccion, tabla, top, prefijo, ventana=None) -> 
     ))
 
     titulo = "Inmigración hacia" if direccion == "inmigracion" else "Emigración desde"
-    cabecera = (f"Censo {censo} ({ventana}) — top {filas.height} de {tabla.height}"
-                if ventana else f"Censo {censo} (top {filas.height} de {tabla.height})")
+    cabecera = (f"Censo {censo} ({ventana}) — {filas.height} de {tabla.height} (acum. {accum:g}%)"
+                if ventana else f"Censo {censo} ({filas.height} de {tabla.height}, acum. {accum:g}%)")
     fig.update_layout(
         title=dict(text=f"{titulo} {NOMBRE[cve]} — {cabecera}"),
         map=dict(style="carto-darkmatter", center=dict(lat=lat0, lon=lon0), zoom=4),
@@ -278,12 +337,14 @@ def mapa_flujo_geo(cve, censo, direccion, tabla, top, prefijo, ventana=None) -> 
     return ruta
 
 
-def mapa_flujo_sankey(cve, censo, direccion, tabla, top, prefijo, ventana=None) -> Path:
+def mapa_flujo_sankey(cve, censo, direccion, tabla, accum, prefijo, ventana=None) -> Path:
     """Diagrama de bandas (Sankey) origen→destino para una sola entidad, con
-    las `top` contrapartes de mayor volumen. Mismo estilo base (nodo azul,
-    banda semitransparente) que dashboard/natalidad_defunciones.py:fig_sankey().
-    `prefijo`/`ventana` como en mapa_flujo_geo."""
-    filas = tabla.head(top)
+    las contrapartes necesarias para acumular `accum`% del volumen total.
+    Mismo estilo base (nodo azul, banda semitransparente) que
+    dashboard/natalidad_defunciones.py:fig_sankey(). `prefijo`/`ventana`
+    como en mapa_flujo_geo."""
+    n = _n_hasta_accum(tabla["personas"].to_list(), tabla["personas"].sum(), accum)
+    filas = tabla.head(n)
     contrapartes = filas["cve_contraparte"].to_list()
     personas = filas["personas"].to_list()
 
@@ -305,8 +366,8 @@ def mapa_flujo_sankey(cve, censo, direccion, tabla, top, prefijo, ventana=None) 
                                 "%{value:,} personas<extra></extra>"),
     ))
     titulo = "Inmigración hacia" if direccion == "inmigracion" else "Emigración desde"
-    cabecera = (f"Censo {censo} ({ventana}) — top {filas.height} de {tabla.height}"
-                if ventana else f"Censo {censo} (top {filas.height} de {tabla.height})")
+    cabecera = (f"Censo {censo} ({ventana}) — {filas.height} de {tabla.height} (acum. {accum:g}%)"
+                if ventana else f"Censo {censo} ({filas.height} de {tabla.height}, acum. {accum:g}%)")
     fig.update_layout(
         title=dict(text=f"{titulo} {NOMBRE[cve]} — {cabecera}"),
         height=max(400, len(labels) * 22 + 100),
@@ -370,14 +431,16 @@ def _click_relaciones_js(pares_od, node_idx, opacidad_base) -> str:
             .replace("__OP_BASE__", str(opacidad_base)))
 
 
-def mapa_flujo_chord_entidad(cve, censo, direccion, tabla, top, prefijo, ventana=None) -> Path:
+def mapa_flujo_chord_entidad(cve, censo, direccion, tabla, accum, prefijo, ventana=None) -> Path:
     """Chord diagram para una sola entidad: mismos datos que mapa_flujo_sankey
-    (nodo `cve` + sus `top` contrapartes de mayor volumen), pero dibujado como
-    cuerdas Bezier cuadráticas en círculo en vez de bandas Sankey. Grosor de
-    cuerda proporcional a `personas`, hover con el par origen→destino. Click
-    en un nodo aísla sus relaciones (atenúa el resto); un segundo click
-    restaura la vista completa. `prefijo`/`ventana` como en mapa_flujo_geo."""
-    filas = tabla.head(top)
+    (nodo `cve` + las contrapartes necesarias para acumular `accum`% del
+    volumen total), pero dibujado como cuerdas Bezier cuadráticas en círculo
+    en vez de bandas Sankey. Grosor de cuerda proporcional a `personas`,
+    hover con el par origen→destino. Click en un nodo aísla sus relaciones
+    (atenúa el resto); un segundo click restaura la vista completa.
+    `prefijo`/`ventana` como en mapa_flujo_geo."""
+    n_filas = _n_hasta_accum(tabla["personas"].to_list(), tabla["personas"].sum(), accum)
+    filas = tabla.head(n_filas)
     contrapartes = filas["cve_contraparte"].to_list()
     personas = filas["personas"].to_list()
 
@@ -433,8 +496,8 @@ def mapa_flujo_chord_entidad(cve, censo, direccion, tabla, top, prefijo, ventana
         )
 
     titulo = "Inmigración hacia" if direccion == "inmigracion" else "Emigración desde"
-    cabecera = (f"Censo {censo} ({ventana}) — top {filas.height} de {tabla.height}"
-                if ventana else f"Censo {censo} (top {filas.height} de {tabla.height})")
+    cabecera = (f"Censo {censo} ({ventana}) — {filas.height} de {tabla.height} (acum. {accum:g}%)"
+                if ventana else f"Censo {censo} ({filas.height} de {tabla.height}, acum. {accum:g}%)")
     fig.update_layout(
         title=dict(text=f"{titulo} {NOMBRE[cve]} — {cabecera}"),
         xaxis=dict(visible=False, range=[-1.5, 1.5]),
@@ -449,16 +512,17 @@ def mapa_flujo_chord_entidad(cve, censo, direccion, tabla, top, prefijo, ventana
     return ruta
 
 
-def mapa_flujo_chord(cves, matriz, censo, top, prefijo, ventana=None) -> Path:
+def mapa_flujo_chord(cves, matriz, censo, accum, prefijo, ventana=None) -> Path:
     """Chord diagram NACIONAL: TODAS las entidades de la matriz origen-destino
     (misma que usa --convergencia) como nodos en círculo — tamaño del
     marcador proporcional a su volumen total (entrante + saliente), color
-    naranja si participa en alguno de los `top` flujos más grandes dibujados,
-    gris si no. Las cuerdas (Bezier cuadrática hacia el centro) tienen
-    grosor proporcional a `personas` y hover con el par origen→destino. Click
-    en un nodo aísla sus relaciones (atenúa el resto); un segundo click
-    restaura la vista completa. Se usa con --map chord cuando no se pasa
-    --entidad. `prefijo`/`ventana` como en mapa_flujo_geo."""
+    naranja si participa en alguno de los flujos dibujados (los necesarios
+    para acumular `accum`% del volumen total de flujos), gris si no. Las
+    cuerdas (Bezier cuadrática hacia el centro) tienen grosor proporcional a
+    `personas` y hover con el par origen→destino. Click en un nodo aísla sus
+    relaciones (atenúa el resto); un segundo click restaura la vista
+    completa. Se usa con --map chord cuando no se pasa --entidad.
+    `prefijo`/`ventana` como en mapa_flujo_geo."""
     idx = {c: i for i, c in enumerate(cves)}
     total_flujo = {c: float(matriz[idx[c], :].sum() + matriz[:, idx[c]].sum()) for c in cves}
     nodos = sorted(cves, key=lambda c: total_flujo[c], reverse=True)
@@ -470,7 +534,9 @@ def mapa_flujo_chord(cves, matriz, censo, top, prefijo, ventana=None) -> Path:
               for i in range(len(cves)) for j in range(len(cves))
               if i != j and matriz[i, j] > 0]
     flujos.sort(key=lambda f: f[2], reverse=True)
-    flujos = flujos[:top]
+    valores_flujos = [v for _, _, v in flujos]
+    n_flujos = _n_hasta_accum(valores_flujos, sum(valores_flujos), accum)
+    flujos = flujos[:n_flujos]
     max_personas = max(v for _, _, v in flujos)
     max_total = max(total_flujo.values())
 
@@ -520,8 +586,8 @@ def mapa_flujo_chord(cves, matriz, censo, top, prefijo, ventana=None) -> Path:
 
     cabecera = f"Censo {censo} ({ventana})" if ventana else f"Censo {censo}"
     fig.update_layout(
-        title=dict(text=f"Top {len(flujos)} flujos migratorios entre {n} entidades — {cabecera} "
-                        f"(tamaño del nodo = volumen total)"),
+        title=dict(text=f"{len(flujos)} flujos migratorios entre {n} entidades (acum. {accum:g}%) "
+                        f"— {cabecera} (tamaño del nodo = volumen total)"),
         xaxis=dict(visible=False, range=[-1.6, 1.6]),
         yaxis=dict(visible=False, range=[-1.6, 1.6], scaleanchor="x"),
         height=800, width=800,
@@ -534,7 +600,7 @@ def mapa_flujo_chord(cves, matriz, censo, top, prefijo, ventana=None) -> Path:
     return ruta
 
 
-def _tabla_flujo_nacional(cves, matriz, direccion, top):
+def _tabla_flujo_nacional(cves, matriz, direccion, accum):
     """Ranking nacional de entidades por volumen total de inmigración (suma
     de columna: todo lo que entra) o emigración (suma de fila: todo lo que
     sale), a partir de la misma matriz origen-destino que usa --convergencia
@@ -545,7 +611,7 @@ def _tabla_flujo_nacional(cves, matriz, direccion, top):
           .sort("personas", descending=True))
     titulo = ("INMIGRACIÓN NACIONAL — entidades que más reciben" if direccion == "inmigracion"
               else "EMIGRACIÓN NACIONAL — entidades que más envían")
-    _tabla(titulo, df, "entidad", int(matriz.sum()), top)
+    _tabla(titulo, df, "entidad", int(matriz.sum()), accum)
 
 
 # ── Compartido: matemática de clustering por perfil de preferencia ─────────
@@ -559,6 +625,44 @@ def _perfiles(matriz, eje):
     sumas = m.sum(axis=1, keepdims=True)
     sumas[sumas == 0] = 1
     return m / sumas
+
+
+def _candidatos_interseccion(matriz, accum):
+    """Para cada entidad (fila/columna `i` de `matriz`), calcula el conjunto
+    de contrapartes que están simultáneamente en su top-`accum`% de
+    emigración (matriz[i,:], mayor a menor) y su top-`accum`% de inmigración
+    (matriz[:,i], mayor a menor) — mismo criterio que _interseccion_flujos,
+    aplicado a las 32 entidades a la vez en vez de a una sola vía --entidad.
+    Devuelve una lista de sets de índices (uno por fila/columna de
+    `matriz`), usada para filtrar candidatos antes de --convergencia."""
+    n = matriz.shape[0]
+    candidatos = []
+    for i in range(n):
+        fila, col = matriz[i, :], matriz[:, i]
+        orden_emi = np.argsort(fila)[::-1]
+        orden_inm = np.argsort(col)[::-1]
+        n_emi = _n_hasta_accum(fila[orden_emi].tolist(), float(fila.sum()), accum)
+        n_inm = _n_hasta_accum(col[orden_inm].tolist(), float(col.sum()), accum)
+        set_emi = {j for j in orden_emi[:n_emi] if fila[j] > 0}
+        set_inm = {j for j in orden_inm[:n_inm] if col[j] > 0}
+        candidatos.append(set_emi & set_inm)
+    return candidatos
+
+
+def _filtrar_perfiles_candidatos(perfiles, candidatos):
+    """Pone en cero, en cada fila de `perfiles`, las columnas que no están en
+    el set de candidatos correspondiente (salida de _candidatos_interseccion),
+    y renormaliza la fila para que siga sumando 1 — perfil de preferencia
+    calculado sólo entre candidatos."""
+    filtrado = np.zeros_like(perfiles)
+    for i, candidatos_i in enumerate(candidatos):
+        idx = list(candidatos_i)
+        if idx:
+            filtrado[i, idx] = perfiles[i, idx]
+        suma = filtrado[i].sum()
+        if suma > 0:
+            filtrado[i] /= suma
+    return filtrado
 
 
 def _clusterizar(perfiles, k):
@@ -607,7 +711,7 @@ def flujos_nacimiento(df, cve, censo):
     return inm, emi, poblacion
 
 
-def detalle_nacimiento(df, cve, censo, top, direccion=None):
+def detalle_nacimiento(df, cve, censo, accum, direccion=None):
     """`direccion=None` imprime ambas tablas (INMIGRANTES y EMIGRANTES);
     'inmigracion'/'emigracion' imprime sólo la correspondiente."""
     inm, emi, poblacion = flujos_nacimiento(df, cve, censo)
@@ -621,12 +725,15 @@ def detalle_nacimiento(df, cve, censo, top, direccion=None):
         print("  Nota: en este censo aún era territorio federal, no estado.")
     print("═" * 72)
 
+    filas_inm = filas_emi = None
     if direccion != "emigracion":
-        _tabla("INMIGRANTES — residen aquí pero nacieron en otra entidad",
-               inm, "origen", n_inm, top, poblacion)
+        filas_inm = _tabla("INMIGRANTES — residen aquí pero nacieron en otra entidad",
+                            inm, "origen", n_inm, accum, poblacion)
     if direccion != "inmigracion":
-        _tabla("EMIGRANTES — nacieron aquí pero residen en otra entidad",
-               emi, "destino", n_emi, top, poblacion)
+        filas_emi = _tabla("EMIGRANTES — nacieron aquí pero residen en otra entidad",
+                            emi, "destino", n_emi, accum, poblacion)
+    if direccion is None:
+        _interseccion_flujos(filas_inm, filas_emi, accum)
 
     neto = n_inm - n_emi
     print(f"\nSALDO NETO ACUMULADO: {neto:+,}"
@@ -643,7 +750,7 @@ def detalle_nacimiento(df, cve, censo, top, direccion=None):
     return inm, emi
 
 
-def acumulado_nacimiento(df, cve, censos, top, direccion=None):
+def acumulado_nacimiento(df, cve, censos, accum, direccion=None):
     """Reporte de un rango de censos, usando el CENSO DESTINO (el más reciente
     del rango) como cifra reportada — es un stock, ya consistente con la
     población real de ese año, así que sumarlo con censos anteriores duplicaría
@@ -658,7 +765,7 @@ def acumulado_nacimiento(df, cve, censos, top, direccion=None):
     print("   sumar varios censos duplicaría personas. Se reporta el más reciente del")
     print("   rango, ya consistente con la población real de ese año.)")
 
-    inm, emi = detalle_nacimiento(df, cve, censo_destino, top, direccion)
+    inm, emi = detalle_nacimiento(df, cve, censo_destino, accum, direccion)
 
     if len(censos) > 1:
         print(f"{'─' * 72}")
@@ -729,52 +836,62 @@ def _flujo_entidad_nacimiento(df, cve, censo, direccion) -> pl.DataFrame:
     return g.sort("personas", descending=True)
 
 
-def convergencia_nacimiento(df, censo, k, top):
-    """Agrupa las entidades de un censo por similitud de perfil migratorio:
-    'emigracion' (mismos destinos preferentes) e 'inmigracion' (mismas
-    fuentes preferentes). Imprime, por grupo, sus miembros y el/los
-    destino(s)/origen(es) compartido(s) dominante(s). Devuelve
-    {direccion: {cve_ent: cluster_id}} para --guardar."""
+def convergencia_nacimiento(df, censo, k, accum):
+    """Agrupa las entidades de un censo en UN solo conjunto de clusters, a
+    partir del perfil de sus contrapartes candidatas: las que están
+    simultáneamente en su top-`accum`% de inmigración Y de emigración
+    (mismo criterio que _interseccion_flujos, vía _candidatos_interseccion).
+    El perfil de clustering es el promedio del perfil de emigración y de
+    inmigración de esas candidatas (_filtrar_perfiles_candidatos aplicado a
+    ambas direcciones) — ya no dos agrupamientos separados por dirección.
+    Imprime, por grupo, sus miembros y las contrapartes compartidas
+    dominantes con su % de emigración y de inmigración. Devuelve
+    {cve_ent: cluster_id} para --guardar."""
     cves, matriz = _matriz_flujo_nacimiento(df, censo)
     nombre = {c: NOMBRE[c] for c in cves}
-    resultado = {}
+    candidatos = _candidatos_interseccion(matriz, accum)
+    perfil_emi = _filtrar_perfiles_candidatos(_perfiles(matriz, "origen"), candidatos)
+    perfil_inm = _filtrar_perfiles_candidatos(_perfiles(matriz, "destino"), candidatos)
+    perfil = perfil_emi + perfil_inm
+    sumas = perfil.sum(axis=1, keepdims=True)
+    sumas[sumas == 0] = 1
+    perfil = perfil / sumas
 
     print(f"\n{'═' * 78}")
     print(f"  Convergencia de flujos migratorios — Censo {censo}")
-    print("  Agrupamiento por perfil de preferencia (no por volumen)")
+    print(f"  Un solo agrupamiento por perfil combinado (emigración + inmigración)")
+    print(f"  de las contrapartes candidatas en la intersección de cada entidad")
+    print(f"  (accum {accum:g}%)")
     print("═" * 78)
 
-    direcciones = [
-        ("origen", "emigracion",
-         "EMIGRACIÓN — estados que comparten los mismos destinos preferentes",
-         "Destino(s) compartido(s)"),
-        ("destino", "inmigracion",
-         "INMIGRACIÓN — estados que comparten las mismas fuentes preferentes",
-         "Origen(es) compartido(s)"),
-    ]
-    for eje, clave, titulo, etiqueta_contraparte in direcciones:
-        perfiles = _perfiles(matriz, eje)
-        etiquetas, k_usado, score = _clusterizar(perfiles, k)
-        resultado[clave] = {int(c): int(e) for c, e in zip(cves, etiquetas)}
+    etiquetas, k_usado, score = _clusterizar(perfil, k)
+    resultado = {int(c): int(e) for c, e in zip(cves, etiquetas)}
 
-        print(f"\n  {titulo}")
-        if k is None:
-            print(f"  (k={k_usado} elegido automáticamente vía silhouette score = {score:.3f})")
-        grupos = {}
-        for cve, etq in zip(cves, etiquetas):
-            grupos.setdefault(int(etq), []).append(cve)
+    if k is None:
+        print(f"\n  (k={k_usado} elegido automáticamente vía silhouette score = {score:.3f})")
+    grupos = {}
+    for cve, etq in zip(cves, etiquetas):
+        grupos.setdefault(int(etq), []).append(cve)
 
-        for cluster_id in sorted(grupos):
-            miembros = grupos[cluster_id]
-            print(f"\n    Grupo {cluster_id + 1}: {', '.join(sorted(nombre[c] for c in miembros))}")
-            perfil_medio = perfiles[[cves.index(c) for c in miembros]].mean(axis=0)
-            print(f"      {etiqueta_contraparte} (promedio del grupo):")
-            for i in np.argsort(perfil_medio)[::-1][:top]:
-                if perfil_medio[i] <= 0:
-                    continue
-                print(f"        {nombre[cves[i]]:<24} {perfil_medio[i] * 100:>6.1f}%")
-            if any(c in TERRITORIOS.get(censo, ()) for c in miembros):
-                print("      * incluye entidad(es) que aún eran territorio federal en este censo")
+    for cluster_id in sorted(grupos):
+        miembros = grupos[cluster_id]
+        print(f"\n  Grupo {cluster_id + 1}: {', '.join(sorted(nombre[c] for c in miembros))}")
+        idx_miembros = [cves.index(c) for c in miembros]
+        perfil_medio = perfil[idx_miembros].mean(axis=0)
+        perfil_medio_emi = perfil_emi[idx_miembros].mean(axis=0)
+        perfil_medio_inm = perfil_inm[idx_miembros].mean(axis=0)
+        print(f"    Contrapartes compartidas (promedio del grupo):")
+        print(f"      {'':<24} {'Emigración':>11} {'Inmigración':>12}")
+        orden = np.argsort(perfil_medio)[::-1]
+        valores_ordenados = perfil_medio[orden]
+        n_mostrar = _n_hasta_accum(valores_ordenados.tolist(), float(valores_ordenados.sum()), accum)
+        for i in orden[:n_mostrar]:
+            if perfil_medio[i] <= 0:
+                continue
+            print(f"      {nombre[cves[i]]:<24} {perfil_medio_emi[i] * 100:>10.1f}%"
+                  f" {perfil_medio_inm[i] * 100:>11.1f}%")
+        if any(c in TERRITORIOS.get(censo, ()) for c in miembros):
+            print("    * incluye entidad(es) que aún eran territorio federal en este censo")
     print()
     return resultado
 
@@ -814,19 +931,17 @@ def main_nacimiento(a):
         censos = (list(a.año) if isinstance(a.año, tuple)
                   else [a.año] if a.año else list(CENSOS_CONVERGENCIA_NACIMIENTO))
         for censo in censos:
-            resultado = convergencia_nacimiento(df, censo, a.k, a.top)
+            resultado = convergencia_nacimiento(df, censo, a.k, a.accum)
             if a.guardar:
-                for direccion, asignacion in resultado.items():
-                    salida = pl.DataFrame({
-                        "censo": [censo] * len(asignacion),
-                        "cve_ent": list(asignacion.keys()),
-                        "entidad": [NOMBRE[c] for c in asignacion],
-                        "direccion": [direccion] * len(asignacion),
-                        "cluster_id": list(asignacion.values()),
-                    })
-                    ruta = DIR / f"convergencia_{direccion}_{censo}.parquet"
-                    salida.write_parquet(ruta)
-                    print(f"Saved → {ruta}  ({salida.height:,} filas)\n")
+                salida = pl.DataFrame({
+                    "censo": [censo] * len(resultado),
+                    "cve_ent": list(resultado.keys()),
+                    "entidad": [NOMBRE[c] for c in resultado],
+                    "cluster_id": list(resultado.values()),
+                })
+                ruta = DIR / f"convergencia_{censo}.parquet"
+                salida.write_parquet(ruta)
+                print(f"Saved → {ruta}  ({salida.height:,} filas)\n")
         return
 
     direccion = "inmigracion" if a.inmigracion else "emigracion" if a.emigracion else None
@@ -834,9 +949,9 @@ def main_nacimiento(a):
     if a.entidad is None:
         cves, matriz = _matriz_flujo_nacimiento(df, a.año)
         if direccion:
-            _tabla_flujo_nacional(cves, matriz, direccion, a.top)
+            _tabla_flujo_nacional(cves, matriz, direccion, a.accum)
         if a.map == "chord":
-            ruta = mapa_flujo_chord(cves, matriz, a.año, a.top, "migracion")
+            ruta = mapa_flujo_chord(cves, matriz, a.año, a.accum, "migracion")
             print(f"Saved → {ruta}\n")
         return
 
@@ -846,10 +961,10 @@ def main_nacimiento(a):
         return
 
     if isinstance(a.año, tuple):
-        inm, emi = acumulado_nacimiento(df, cve, list(a.año), a.top, direccion)
+        inm, emi = acumulado_nacimiento(df, cve, list(a.año), a.accum, direccion)
         etiqueta_año = f"{a.año[0]}-{a.año[-1]}"
     else:
-        inm, emi = detalle_nacimiento(df, cve, a.año, a.top, direccion)
+        inm, emi = detalle_nacimiento(df, cve, a.año, a.accum, direccion)
         etiqueta_año = str(a.año)
 
     if a.guardar:
@@ -869,7 +984,7 @@ def main_nacimiento(a):
         tabla = _flujo_entidad_nacimiento(df, cve, a.año, direccion)
         fn = {"geo": mapa_flujo_geo, "sankey": mapa_flujo_sankey,
               "chord": mapa_flujo_chord_entidad}[a.map]
-        ruta = fn(cve, a.año, direccion, tabla, a.top, "migracion")
+        ruta = fn(cve, a.año, direccion, tabla, a.accum, "migracion")
         print(f"Saved → {ruta}\n")
 
 
@@ -917,7 +1032,7 @@ def flujos_movilidad(mig, cve, censo):
     return inm, emi, poblacion, flujo
 
 
-def paises_2020(cve, top):
+def paises_2020(cve, accum):
     """Desglose por país del flujo extranjero de 2020 (único censo con este detalle)."""
     df = (
         pl.read_parquet(DIR / "ccpv_extranjeros_pais_2020.parquet")
@@ -925,11 +1040,11 @@ def paises_2020(cve, top):
         .select(["pais", "personas"]).sort("personas", descending=True)
     )
     _tabla("  Flujo por país de residencia en marzo de 2015", df, "pais",
-           df["personas"].sum(), top)
+           df["personas"].sum(), accum)
     return df
 
 
-def detalle_movilidad(mig, cve, censo, top, direccion=None):
+def detalle_movilidad(mig, cve, censo, accum, direccion=None):
     """`direccion=None` imprime ambas tablas (INMIGRANTES y EMIGRANTES);
     'inmigracion'/'emigracion' imprime sólo la correspondiente."""
     inm, emi, poblacion, flujo = flujos_movilidad(mig, cve, censo)
@@ -941,10 +1056,15 @@ def detalle_movilidad(mig, cve, censo, top, direccion=None):
     print(f"  Población de 5 años y más: {poblacion:,}")
     print("═" * 72)
 
+    filas_inm = filas_emi = None
     if direccion != "emigracion":
-        _tabla("INMIGRANTES — llegaron desde otra entidad", inm, "origen", n_inm, top, poblacion)
+        filas_inm = _tabla("INMIGRANTES — llegaron desde otra entidad",
+                            inm, "origen", n_inm, accum, poblacion)
     if direccion != "inmigracion":
-        _tabla("EMIGRANTES — salieron hacia otra entidad", emi, "destino", n_emi, top, poblacion)
+        filas_emi = _tabla("EMIGRANTES — salieron hacia otra entidad",
+                            emi, "destino", n_emi, accum, poblacion)
+    if direccion is None:
+        _interseccion_flujos(filas_inm, filas_emi, accum)
 
     neto = n_inm - n_emi
     print(f"\nSALDO NETO INTERESTATAL: {neto:+,}"
@@ -965,7 +1085,7 @@ def detalle_movilidad(mig, cve, censo, top, direccion=None):
 
     paises = pl.DataFrame(schema={"pais": pl.Utf8, "personas": pl.Int64})
     if censo == 2020:
-        paises = paises_2020(cve, top)
+        paises = paises_2020(cve, accum)
 
     stock = mig.filter((pl.col("censo") == censo) & (pl.col("concepto") == "nacimiento"))
     if stock.height == 0:
@@ -1008,7 +1128,7 @@ def flujos_acumulados_movilidad(mig, cve, censos):
     return inm, emi
 
 
-def acumulado_movilidad(mig, cve, censos, top, direccion=None):
+def acumulado_movilidad(mig, cve, censos, accum, direccion=None):
     """`direccion` como en detalle_movilidad. El % de población de las tablas
     se calcula sobre la población del censo destino (el más reciente del
     rango), igual criterio que acumulado_nacimiento."""
@@ -1022,12 +1142,15 @@ def acumulado_movilidad(mig, cve, censos, top, direccion=None):
     print(f"  Ventanas sumadas: {' · '.join(VENTANA[c] for c in censos)}")
     print("═" * 72)
 
+    filas_inm = filas_emi = None
     if direccion != "emigracion":
-        _tabla(f"INMIGRANTES — suma de {len(censos)} censos", inm, "origen", n_inm, top,
-               poblacion_destino)
+        filas_inm = _tabla(f"INMIGRANTES — suma de {len(censos)} censos", inm, "origen", n_inm,
+                            accum, poblacion_destino)
     if direccion != "inmigracion":
-        _tabla(f"EMIGRANTES — suma de {len(censos)} censos", emi, "destino", n_emi, top,
-               poblacion_destino)
+        filas_emi = _tabla(f"EMIGRANTES — suma de {len(censos)} censos", emi, "destino", n_emi,
+                            accum, poblacion_destino)
+    if direccion is None:
+        _interseccion_flujos(filas_inm, filas_emi, accum)
 
     print(f"\nSALDO NETO INTERESTATAL (suma de los {len(censos)} censos): {n_inm - n_emi:+,}")
     print("\nNota: estos censos cubren quinquenios no solapados, pero dejan años sin medir")
@@ -1068,7 +1191,7 @@ def acumulado_movilidad(mig, cve, censos, top, direccion=None):
 
     paises = pl.DataFrame(schema={"pais": pl.Utf8, "personas": pl.Int64})
     if 2020 in censos:
-        paises = paises_2020(cve, top)
+        paises = paises_2020(cve, accum)
 
     # El stock (nacidos en el extranjero) es un corte a cada censo, no un flujo: una
     # misma persona puede seguir ahí en el siguiente censo. Se muestra por censo, sin
@@ -1130,50 +1253,60 @@ def _flujo_entidad_movilidad(mig, cve, censo, direccion) -> pl.DataFrame:
     return g.sort("personas", descending=True)
 
 
-def convergencia_movilidad(mig, censo, k, top):
-    """Agrupa las entidades de un censo por similitud de perfil de movilidad
-    del quinquenio: 'emigracion' (mismos destinos preferentes) e
-    'inmigracion' (mismas fuentes preferentes). Imprime, por grupo, sus
-    miembros y el/los destino(s)/origen(es) compartido(s) dominante(s).
-    Devuelve {direccion: {cve_ent: cluster_id}} para --guardar."""
+def convergencia_movilidad(mig, censo, k, accum):
+    """Agrupa las entidades de un censo en UN solo conjunto de clusters, a
+    partir del perfil de sus contrapartes candidatas: las que están
+    simultáneamente en su top-`accum`% de inmigración Y de emigración del
+    quinquenio (mismo criterio que _interseccion_flujos, vía
+    _candidatos_interseccion). El perfil de clustering es el promedio del
+    perfil de emigración y de inmigración de esas candidatas
+    (_filtrar_perfiles_candidatos aplicado a ambas direcciones) — ya no dos
+    agrupamientos separados por dirección. Imprime, por grupo, sus miembros
+    y las contrapartes compartidas dominantes con su % de emigración y de
+    inmigración. Devuelve {cve_ent: cluster_id} para --guardar."""
     cves, matriz = _matriz_flujo_movilidad(mig, censo)
     nombre = {c: NOMBRE[c] for c in cves}
-    resultado = {}
+    candidatos = _candidatos_interseccion(matriz, accum)
+    perfil_emi = _filtrar_perfiles_candidatos(_perfiles(matriz, "origen"), candidatos)
+    perfil_inm = _filtrar_perfiles_candidatos(_perfiles(matriz, "destino"), candidatos)
+    perfil = perfil_emi + perfil_inm
+    sumas = perfil.sum(axis=1, keepdims=True)
+    sumas[sumas == 0] = 1
+    perfil = perfil / sumas
 
     print(f"\n{'═' * 78}")
     print(f"  Convergencia de movilidad interestatal — Censo {censo} ({VENTANA[censo]})")
-    print("  Agrupamiento por perfil de preferencia (no por volumen)")
+    print(f"  Un solo agrupamiento por perfil combinado (emigración + inmigración)")
+    print(f"  de las contrapartes candidatas en la intersección de cada entidad")
+    print(f"  (accum {accum:g}%)")
     print("═" * 78)
 
-    direcciones = [
-        ("origen", "emigracion",
-         "EMIGRACIÓN — estados que comparten los mismos destinos preferentes",
-         "Destino(s) compartido(s)"),
-        ("destino", "inmigracion",
-         "INMIGRACIÓN — estados que comparten las mismas fuentes preferentes",
-         "Origen(es) compartido(s)"),
-    ]
-    for eje, clave, titulo, etiqueta_contraparte in direcciones:
-        perfiles = _perfiles(matriz, eje)
-        etiquetas, k_usado, score = _clusterizar(perfiles, k)
-        resultado[clave] = {int(c): int(e) for c, e in zip(cves, etiquetas)}
+    etiquetas, k_usado, score = _clusterizar(perfil, k)
+    resultado = {int(c): int(e) for c, e in zip(cves, etiquetas)}
 
-        print(f"\n  {titulo}")
-        if k is None:
-            print(f"  (k={k_usado} elegido automáticamente vía silhouette score = {score:.3f})")
-        grupos = {}
-        for cve, etq in zip(cves, etiquetas):
-            grupos.setdefault(int(etq), []).append(cve)
+    if k is None:
+        print(f"\n  (k={k_usado} elegido automáticamente vía silhouette score = {score:.3f})")
+    grupos = {}
+    for cve, etq in zip(cves, etiquetas):
+        grupos.setdefault(int(etq), []).append(cve)
 
-        for cluster_id in sorted(grupos):
-            miembros = grupos[cluster_id]
-            print(f"\n    Grupo {cluster_id + 1}: {', '.join(sorted(nombre[c] for c in miembros))}")
-            perfil_medio = perfiles[[cves.index(c) for c in miembros]].mean(axis=0)
-            print(f"      {etiqueta_contraparte} (promedio del grupo):")
-            for i in np.argsort(perfil_medio)[::-1][:top]:
-                if perfil_medio[i] <= 0:
-                    continue
-                print(f"        {nombre[cves[i]]:<24} {perfil_medio[i] * 100:>6.1f}%")
+    for cluster_id in sorted(grupos):
+        miembros = grupos[cluster_id]
+        print(f"\n  Grupo {cluster_id + 1}: {', '.join(sorted(nombre[c] for c in miembros))}")
+        idx_miembros = [cves.index(c) for c in miembros]
+        perfil_medio = perfil[idx_miembros].mean(axis=0)
+        perfil_medio_emi = perfil_emi[idx_miembros].mean(axis=0)
+        perfil_medio_inm = perfil_inm[idx_miembros].mean(axis=0)
+        print(f"    Contrapartes compartidas (promedio del grupo):")
+        print(f"      {'':<24} {'Emigración':>11} {'Inmigración':>12}")
+        orden = np.argsort(perfil_medio)[::-1]
+        valores_ordenados = perfil_medio[orden]
+        n_mostrar = _n_hasta_accum(valores_ordenados.tolist(), float(valores_ordenados.sum()), accum)
+        for i in orden[:n_mostrar]:
+            if perfil_medio[i] <= 0:
+                continue
+            print(f"      {nombre[cves[i]]:<24} {perfil_medio_emi[i] * 100:>10.1f}%"
+                  f" {perfil_medio_inm[i] * 100:>11.1f}%")
     print()
     return resultado
 
@@ -1209,19 +1342,17 @@ def main_movilidad(a):
         censos = (list(a.año) if isinstance(a.año, tuple)
                   else [a.año] if a.año else list(CENSOS_CONVERGENCIA_MOVILIDAD))
         for censo in censos:
-            resultado = convergencia_movilidad(mig, censo, a.k, a.top)
+            resultado = convergencia_movilidad(mig, censo, a.k, a.accum)
             if a.guardar:
-                for direccion, asignacion in resultado.items():
-                    salida = pl.DataFrame({
-                        "censo": [censo] * len(asignacion),
-                        "cve_ent": list(asignacion.keys()),
-                        "entidad": [NOMBRE[c] for c in asignacion],
-                        "direccion": [direccion] * len(asignacion),
-                        "cluster_id": list(asignacion.values()),
-                    })
-                    ruta = DIR / f"convergencia_movilidad_{direccion}_{censo}.parquet"
-                    salida.write_parquet(ruta)
-                    print(f"Saved → {ruta}  ({salida.height:,} filas)\n")
+                salida = pl.DataFrame({
+                    "censo": [censo] * len(resultado),
+                    "cve_ent": list(resultado.keys()),
+                    "entidad": [NOMBRE[c] for c in resultado],
+                    "cluster_id": list(resultado.values()),
+                })
+                ruta = DIR / f"convergencia_movilidad_{censo}.parquet"
+                salida.write_parquet(ruta)
+                print(f"Saved → {ruta}  ({salida.height:,} filas)\n")
         return
 
     direccion = "inmigracion" if a.inmigracion else "emigracion" if a.emigracion else None
@@ -1229,18 +1360,18 @@ def main_movilidad(a):
     if a.entidad is None:
         cves, matriz = _matriz_flujo_movilidad(mig, a.año)
         if direccion:
-            _tabla_flujo_nacional(cves, matriz, direccion, a.top)
+            _tabla_flujo_nacional(cves, matriz, direccion, a.accum)
         if a.map == "chord":
-            ruta = mapa_flujo_chord(cves, matriz, a.año, a.top, "movilidad", ventana=VENTANA[a.año])
+            ruta = mapa_flujo_chord(cves, matriz, a.año, a.accum, "movilidad", ventana=VENTANA[a.año])
             print(f"Saved → {ruta}\n")
         return
 
-    cve, top = a.entidad, a.top
+    cve, accum = a.entidad, a.accum
     if isinstance(a.año, tuple):
-        inm, emi, paises = acumulado_movilidad(mig, cve, list(a.año), top, direccion)
+        inm, emi, paises = acumulado_movilidad(mig, cve, list(a.año), accum, direccion)
         etiqueta_año = f"{a.año[0]}-{a.año[-1]}"
     else:
-        inm, emi, paises = detalle_movilidad(mig, cve, a.año, top, direccion)
+        inm, emi, paises = detalle_movilidad(mig, cve, a.año, accum, direccion)
         etiqueta_año = str(a.año)
 
     if a.guardar:
@@ -1261,7 +1392,7 @@ def main_movilidad(a):
         tabla = _flujo_entidad_movilidad(mig, cve, a.año, direccion)
         fn = {"geo": mapa_flujo_geo, "sankey": mapa_flujo_sankey,
               "chord": mapa_flujo_chord_entidad}[a.map]
-        ruta = fn(cve, a.año, direccion, tabla, top, "movilidad", ventana=VENTANA[a.año])
+        ruta = fn(cve, a.año, direccion, tabla, accum, "movilidad", ventana=VENTANA[a.año])
         print(f"Saved → {ruta}\n")
 
 
@@ -1282,7 +1413,11 @@ def build_parser():
                    help="Año censal, o rango 'AAAA-AAAA' para el acumulado de varios "
                         "censos (obligatorio salvo con --serie; con --convergencia, "
                         "default 1950-1980)")
-    p_nac.add_argument("--top", type=int, default=10, help="Filas por tabla (default 10)")
+    p_nac.add_argument("--accum", type=_accum, default=80,
+                   help="%% acumulado del share a mostrar en tablas y diagramas (default 80): "
+                        "se listan las filas de mayor a menor volumen hasta acumular ese %%. "
+                        "Con --convergencia, además decide qué contrapartes cuentan como "
+                        "candidatas (intersección inmigración∩emigración) antes de agrupar")
     p_nac.add_argument("--serie", action="store_true",
                    help="Trayectoria de la entidad en los 8 censos, en vez del detalle")
     p_nac.add_argument("--convergencia", action="store_true",
@@ -1298,10 +1433,11 @@ def build_parser():
                         "(censo suelto). --map geo (default) arcos sobre el mapa de México, "
                         "--map sankey diagrama de bandas: ambos requieren --entidad y "
                         "exactamente uno de --inmigracion/--emigracion. --map chord también "
-                        "acepta --entidad y una dirección (dibuja esa entidad + sus --top "
-                        "contrapartes como cuerdas en círculo), pero --entidad es opcional: "
-                        "si se omite, genera un chord diagram NACIONAL con los --top flujos "
-                        "más grandes entre cualquier par de entidades")
+                        "acepta --entidad y una dirección (dibuja esa entidad + las "
+                        "contrapartes necesarias para acumular --accum%% del volumen, como "
+                        "cuerdas en círculo), pero --entidad es opcional: si se omite, genera "
+                        "un chord diagram NACIONAL con los flujos necesarios para acumular "
+                        "--accum%% del volumen total entre cualquier par de entidades")
     p_nac.add_argument("--inmigracion", action="store_true",
                    help="Filtra el reporte a sólo inmigración (con --entidad: orígenes que le "
                         "mandan migrantes; sin --entidad: ranking nacional de entidades "
@@ -1314,7 +1450,7 @@ def build_parser():
                         "del diagrama")
     p_nac.add_argument("--guardar", action="store_true",
                    help="Escribe el resultado a dashboard_data/nacimiento_<entidad>_<año>.parquet "
-                        "(o dashboard_data/convergencia_<direccion>_<censo>.parquet con --convergencia)")
+                        "(o dashboard_data/convergencia_<censo>.parquet con --convergencia)")
 
     p_mov = sub.add_parser("movilidad",
                             help="Movilidad declarada del quinquenio previo, censos 1990–2020")
@@ -1327,7 +1463,11 @@ def build_parser():
                         "(obligatorio salvo con --convergencia; con --convergencia, default "
                         f"{CENSOS_CONVERGENCIA_MOVILIDAD[0]}-{CENSOS_CONVERGENCIA_MOVILIDAD[-1]}, "
                         "excluye 2015)")
-    p_mov.add_argument("--top", type=int, default=10, help="Filas por tabla (default 10)")
+    p_mov.add_argument("--accum", type=_accum, default=80,
+                   help="%% acumulado del share a mostrar en tablas y diagramas (default 80): "
+                        "se listan las filas de mayor a menor volumen hasta acumular ese %%. "
+                        "Con --convergencia, además decide qué contrapartes cuentan como "
+                        "candidatas (intersección inmigración∩emigración) antes de agrupar")
     p_mov.add_argument("--convergencia", action="store_true",
                    help="Agrupa las 32 entidades por similitud de perfil de movilidad "
                         "(destinos preferentes en emigración, fuentes preferentes en "
@@ -1342,9 +1482,10 @@ def build_parser():
                         "mapa de México, --map sankey diagrama de bandas: ambos requieren "
                         "--entidad y exactamente uno de --inmigracion/--emigracion. --map "
                         "chord también acepta --entidad y una dirección (dibuja esa entidad "
-                        "+ sus --top contrapartes como cuerdas en círculo), pero --entidad es "
-                        "opcional: si se omite, genera un chord diagram NACIONAL con los "
-                        "--top flujos más grandes entre cualquier par de entidades")
+                        "+ las contrapartes necesarias para acumular --accum%% del volumen, "
+                        "como cuerdas en círculo), pero --entidad es opcional: si se omite, "
+                        "genera un chord diagram NACIONAL con los flujos necesarios para "
+                        "acumular --accum%% del volumen total entre cualquier par de entidades")
     p_mov.add_argument("--inmigracion", action="store_true",
                    help="Filtra el reporte a sólo inmigración (con --entidad: orígenes que le "
                         "mandan gente; sin --entidad: ranking nacional de entidades receptoras). "
@@ -1357,7 +1498,7 @@ def build_parser():
                         "del diagrama")
     p_mov.add_argument("--guardar", action="store_true",
                    help="Escribe el resultado a dashboard_data/movilidad_<entidad>_<año>.parquet "
-                        "(o dashboard_data/convergencia_movilidad_<direccion>_<censo>.parquet "
+                        "(o dashboard_data/convergencia_movilidad_<censo>.parquet "
                         "con --convergencia)")
     return p
 
