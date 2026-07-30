@@ -431,9 +431,9 @@ def clusters(censo_df, año, k):
         filas.append({
             "entidades": sorted(nombre_por_cve[c] for c in miembros),
             "poblacion": poblacion,
-            "share_pct": poblacion / total_nacional * 100,
+            "share_pct": poblacion / total_nacional * 100 if poblacion is not None else None,
         })
-    filas.sort(key=lambda f: f["poblacion"], reverse=True)
+    filas.sort(key=lambda f: (f["poblacion"] is not None, f["poblacion"] or 0), reverse=True)
     return filas, total_nacional
 
 
@@ -672,7 +672,8 @@ def main():
         print("═" * 68)
         acumulado = 0.0
         for i, f in enumerate(filas, start=1):
-            acumulado += f["share_pct"]
+            if f["share_pct"] is not None:
+                acumulado += f["share_pct"]
             print(f"\n  Cluster {i}: {_fmt(f['poblacion']):>12}  "
                   f"({_fmt(f['share_pct'], 1, sufijo='%')}, {_fmt(acumulado, 1, sufijo='%')} acum.)")
             print(f"    {', '.join(f['entidades'])}")
@@ -682,7 +683,8 @@ def main():
             acumulado = 0.0
             filas_guardar = []
             for i, f in enumerate(filas, start=1):
-                acumulado += f["share_pct"]
+                if f["share_pct"] is not None:
+                    acumulado += f["share_pct"]
                 for entidad in f["entidades"]:
                     filas_guardar.append({
                         "cluster_id": i, "entidad": entidad,
