@@ -151,6 +151,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import plotly.express as px
 import plotly.graph_objects as go
 
 RAIZ = Path(__file__).resolve().parents[2]
@@ -160,7 +161,7 @@ sys.path.insert(0, str(RAIZ / "scripts" / "centralismo"))
 from comun import NOMBRE, normalizar_estado
 from prepare_ccpv_nacimiento import TERRITORIOS
 from prepare_ccpv_migracion import EMIGRANTES_AGREGADO
-from crecimiento_poblacional import centroides, VECINOS, _conectado
+from crecimiento_poblacional import centroides, VECINOS, _conectado, GEOJSON_PATH
 
 DIR = RAIZ / "dashboard_data"
 
@@ -1414,8 +1415,71 @@ def convergencia_movilidad(mig, censo, k, accum):
     return {int(c): int(e) for c, e in zip(cves, etiquetas)}
 
 
+REGIONES_PATHS = {5: DIR / "regiones_movilidad.csv", 6: DIR / "regiones_movilidad_k6.csv"}
+
+
+def mapa_regiones(k) -> Path:
+    """Choropleth HTML estático de las 32 entidades coloreadas por región
+    migratoria estable (REGIONES_PATHS[k], generado por
+    scripts/prepare_regiones_movilidad.py — consolida --convergencia con
+    ese mismo k sobre los 5 censos con matriz origen-destino, 1990-2020, en
+    una sola asignación entidad→región por mayoría). No depende de --año ni
+    de --entidad: es una foto consolidada, no de un censo suelto. Sólo hay
+    datos preparados para k=5 y k=6 (REGIONES_PATHS) — para otro k hay que
+    correr antes scripts/prepare_regiones_movilidad.py con ese k agregado a
+    PRESETS.
+
+    Mismo patrón que mapa_clusters(..., union=True) en
+    crecimiento_poblacional.py: sin trazo de borde entre entidades — como
+    las de una misma región ya comparten color de relleno, se perciben como
+    una sola masa territorial sin necesidad de fusión geométrica real."""
+    ruta_csv = REGIONES_PATHS.get(k)
+    if ruta_csv is None:
+        raise SystemExit(f"--map regiones sólo tiene datos preparados para k en "
+                         f"{sorted(REGIONES_PATHS)} (se pidió k={k}).")
+    if not ruta_csv.exists():
+        raise SystemExit(f"Falta {ruta_csv}.\n"
+                         "Corre primero: uv run python scripts/prepare_regiones_movilidad.py")
+    NOMBRE_GEOJSON = {"Estado de México": "México"}
+    filas = [
+        {"entidad": r["entidad"], "entidad_geojson": NOMBRE_GEOJSON.get(r["entidad"], r["entidad"]),
+         "region": r["region"]}
+        for r in pl.read_csv(ruta_csv).iter_rows(named=True)
+    ]
+    df = pl.DataFrame(filas).to_pandas()
+    geo = json.loads(GEOJSON_PATH.read_text(encoding="utf-8"))
+
+    fig = px.choropleth_map(
+        df, geojson=geo, locations="entidad_geojson", featureidkey="properties.name",
+        color="region", hover_name="entidad", custom_data=["region"],
+        map_style="carto-darkmatter", center={"lat": 23.6, "lon": -102.5}, zoom=4,
+        color_discrete_sequence=px.colors.qualitative.Set3, labels={"region": "Región"},
+    )
+    fig.update_traces(hovertemplate="<b>%{hovertext}</b><br>%{customdata[0]}<extra></extra>",
+                      marker_line_width=0)
+    fig.update_layout(
+        title=dict(text=f"Regiones migratorias estables (k={k}) — movilidad interestatal 1990-2020"),
+        margin=dict(t=60, b=0, l=0, r=0), height=580,
+    )
+
+    ruta = DIR / f"movilidad_regiones_mapa_k{k}.html"
+    fig.write_html(ruta)
+    return ruta
+
+
 def main_movilidad(a):
     p = a._subparser
+    if a.map == "regiones":
+        if (a.entidad is not None or a.convergencia or a.inmigracion or a.emigracion
+                or a.año is not None):
+            p.error("--map regiones es un mapa nacional estático (no depende de un censo): "
+                    "incompatible con --entidad, --convergencia, --inmigracion/--emigracion, --año")
+        if a.k is not None and a.k not in REGIONES_PATHS:
+            p.error(f"--map regiones sólo tiene datos preparados para --k en "
+                    f"{sorted(REGIONES_PATHS)} (se pidió --k {a.k})")
+        ruta = mapa_regiones(a.k or 5)
+        print(f"Saved → {ruta}\n")
+        return
     if a.convergencia and a.entidad is not None:
         p.error("--convergencia es incompatible con --entidad (es un reporte cruzado de las 32 entidades)")
     if a.map and a.convergencia:
@@ -1581,17 +1645,27 @@ def build_parser():
     p_mov.add_argument("--k", type=_k, default=None,
                    help="Número de grupos para --convergencia. Si se omite, se prueban "
                         "k=5, 6 y 7 y gana el de mayor modularidad (descartando los que "
-                        "produzcan un grupo de más de 8 entidades)")
-    p_mov.add_argument("--map", nargs="?", choices=["geo", "sankey", "chord"], const="geo", default=None,
-                   help="Genera un diagrama de flujo HTML en dashboard_data/. Requiere --año "
-                        "(censo suelto, 2015 excluido). --map geo (default) arcos sobre el "
-                        "mapa de México, --map sankey diagrama de bandas: ambos requieren "
-                        "--entidad y exactamente uno de --inmigracion/--emigracion. --map "
-                        "chord también acepta --entidad y una dirección (dibuja esa entidad "
-                        "+ las contrapartes necesarias para acumular --accum%% del volumen, "
-                        "como cuerdas en círculo), pero --entidad es opcional: si se omite, "
-                        "genera un chord diagram NACIONAL con los flujos necesarios para "
-                        "acumular --accum%% del volumen total entre cualquier par de entidades")
+                        "produzcan un grupo de más de 8 entidades). Con --map regiones, en "
+                        "cambio, elige entre los dos archivos ya preparados (5 o 6, default "
+                        "5) — no dispara un agrupamiento nuevo")
+    p_mov.add_argument("--map", nargs="?", choices=["geo", "sankey", "chord", "regiones"],
+                   const="geo", default=None,
+                   help="Genera un diagrama HTML en dashboard_data/. --map geo/sankey/chord "
+                        "requieren --año (censo suelto, 2015 excluido). --map geo (default) "
+                        "arcos sobre el mapa de México, --map sankey diagrama de bandas: ambos "
+                        "requieren --entidad y exactamente uno de --inmigracion/--emigracion. "
+                        "--map chord también acepta --entidad y una dirección (dibuja esa "
+                        "entidad + las contrapartes necesarias para acumular --accum%% del "
+                        "volumen, como cuerdas en círculo), pero --entidad es opcional: si se "
+                        "omite, genera un chord diagram NACIONAL con los flujos necesarios "
+                        "para acumular --accum%% del volumen total entre cualquier par de "
+                        "entidades. --map regiones es distinto: un choropleth estático (sin "
+                        "bordes entre entidades de la misma región, como --mapa-union de "
+                        "crecimiento_poblacional.py) de las regiones migratorias consolidadas "
+                        "por scripts/prepare_regiones_movilidad.py. --k elige el archivo: 5 "
+                        "(default, dashboard_data/regiones_movilidad.csv) o 6 "
+                        "(dashboard_data/regiones_movilidad_k6.csv). No depende de --año ni "
+                        "de --entidad, incompatible con ambos")
     p_mov.add_argument("--inmigracion", action="store_true",
                    help="Filtra el reporte a sólo inmigración (con --entidad: orígenes que le "
                         "mandan gente; sin --entidad: ranking nacional de entidades receptoras). "
