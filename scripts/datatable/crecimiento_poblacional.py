@@ -33,6 +33,11 @@ California de por medio); cada una se trata como vecina sólo de la entidad más
 cercana al otro lado del golfo (Baja California de Sonora, Baja California Sur
 de Sinaloa) para que el país quede como un solo bloque conexo.
 
+--linkage elige el criterio de aglomeración jerárquica usado por --clusters y
+--regiones: ward (default, minimiza varianza intra-cluster, regiones más
+compactas/balanceadas), complete (máximo enlace), average (enlace promedio) o
+single (mínimo enlace, propenso a regiones alargadas).
+
 --mapa (junto con --clusters) genera un choropleth HTML interactivo, coloreado
 por la población/share de cada cluster (escala de calor continua — todos los
 estados de un mismo cluster comparten color).
@@ -57,6 +62,7 @@ Run: uv run python scripts/datatable/crecimiento_poblacional.py --entidad Jalisc
      uv run python scripts/datatable/crecimiento_poblacional.py --año 1990
      uv run python scripts/datatable/crecimiento_poblacional.py --clusters 5
      uv run python scripts/datatable/crecimiento_poblacional.py --clusters 5 --mapa
+     uv run python scripts/datatable/crecimiento_poblacional.py --clusters 5 --linkage single
      uv run python scripts/datatable/crecimiento_poblacional.py --regiones 5
 """
 
@@ -385,19 +391,21 @@ def entidades_consistentes(df, lo, hi, umbral) -> pl.DataFrame:
     })
 
 
-def agrupar(k) -> dict:
+def agrupar(k, linkage="ward") -> dict:
     """Asigna las 32 entidades a k grupos de vecinos contiguos: clustering
-    jerárquico (ward) sobre el centroide geográfico de cada entidad,
-    restringido a fusionar sólo entidades vecinas (VECINOS). La asignación es
-    puramente geográfica — no depende del año censal, así que el mismo
-    agrupamiento sirve para reportar cualquier censo (ver clusters()) o para
-    seguir la trayectoria histórica de cada región (ver serie_regiones())."""
+    jerárquico sobre el centroide geográfico de cada entidad, restringido a
+    fusionar sólo entidades vecinas (VECINOS). `linkage` es el criterio de
+    aglomeración (ver --linkage): "ward" (default), "complete", "average" o
+    "single". La asignación es puramente geográfica — no depende del año
+    censal, así que el mismo agrupamiento sirve para reportar cualquier censo
+    (ver clusters()) o para seguir la trayectoria histórica de cada región
+    (ver serie_regiones())."""
     cent = centroides()
     cves = list(range(1, 33))
     X = np.array([cent[c] for c in cves])
     adj = np.array([[1 if b in VECINOS[a] else 0 for b in cves] for a in cves])
 
-    modelo = AgglomerativeClustering(n_clusters=k, connectivity=adj, linkage="ward")
+    modelo = AgglomerativeClustering(n_clusters=k, connectivity=adj, linkage=linkage)
     etiquetas = modelo.fit_predict(X)
 
     grupos = {}
@@ -418,7 +426,7 @@ def _pob_grupo(censo_df, miembros, año):
     return sum(disponibles) if disponibles else None
 
 
-def clusters(censo_df, año, k):
+def clusters(censo_df, año, k, linkage="ward"):
     """Agrupa las 32 entidades en k regiones de estados vecinos (ver
     agrupar()) y reporta la población de cada región en un censo dado."""
     pob = censo_df.filter(pl.col("año") == año).select(["cve_ent", "entidad", "poblacion"])
@@ -426,7 +434,7 @@ def clusters(censo_df, año, k):
     nombre_por_cve = dict(zip(pob["cve_ent"].to_list(), pob["entidad"].to_list()))
 
     filas = []
-    for miembros in agrupar(k).values():
+    for miembros in agrupar(k, linkage).values():
         poblacion = _pob_grupo(censo_df, miembros, año)
         filas.append({
             "entidades": sorted(nombre_por_cve[c] for c in miembros),
@@ -437,7 +445,7 @@ def clusters(censo_df, año, k):
     return filas, total_nacional
 
 
-def serie_regiones(censo_df, k, conapo_df=None, paso=1) -> pl.DataFrame:
+def serie_regiones(censo_df, k, conapo_df=None, paso=1, linkage="ward") -> pl.DataFrame:
     """Trayectoria histórica de población por región — mismo cálculo de
     cambio/TCMA que calcular() para una entidad, pero sumando la región
     completa. La agrupación (agrupar()) se calcula una sola vez y es la misma
@@ -453,7 +461,7 @@ def serie_regiones(censo_df, k, conapo_df=None, paso=1) -> pl.DataFrame:
     nombre_por_cve = dict(censo_df.select(["cve_ent", "entidad"]).unique().iter_rows())
     total_por_año = dict(df.group_by("año").agg(pl.sum("poblacion")).iter_rows())
     años = sorted(df["año"].unique().to_list())
-    grupos = list(agrupar(k).values())
+    grupos = list(agrupar(k, linkage).values())
     grupos.sort(key=lambda m: _pob_grupo(df, m, CENSOS[-1]) or 0, reverse=True)
 
     salida = []
@@ -569,6 +577,13 @@ def main():
                         "censos) de población de cada región, en vez de una foto de un año. "
                         "Admite --proyeccion para extenderla más allá de 2020. Incompatible "
                         "con --entidad")
+    p.add_argument("--linkage", choices=["ward", "complete", "average", "single"],
+                   default="ward",
+                   help="Criterio de aglomeración jerárquica para --clusters/--regiones "
+                        "(default ward): ward minimiza varianza intra-cluster (regiones más "
+                        "compactas/balanceadas); complete usa el enlace máximo; average el "
+                        "enlace promedio; single el enlace mínimo (propenso a regiones "
+                        "alargadas)")
     p.add_argument("--proyeccion", nargs="?", type=_paso, const=1, default=None,
                    help="Complementa la serie con la reconstrucción/proyección de CONAPO "
                         "(1990-2040): llena los huecos intercensales de 1990 a 2020 y agrega "
@@ -627,7 +642,7 @@ def main():
         if a.entidad is not None:
             p.error("--regiones es incompatible con --entidad (es un reporte nacional)")
         conapo_df = leer_conapo() if a.proyeccion else None
-        tabla = serie_regiones(censo_df, a.regiones, conapo_df, a.proyeccion or 1)
+        tabla = serie_regiones(censo_df, a.regiones, conapo_df, a.proyeccion or 1, a.linkage)
 
         print(f"\n{'═' * 78}")
         print(f"  Crecimiento poblacional por región — {a.regiones} clusters de estados vecinos")
@@ -665,7 +680,7 @@ def main():
     if a.clusters is not None:
         if a.entidad is not None:
             p.error("--clusters es incompatible con --entidad (es un reporte nacional)")
-        filas, total_nacional = clusters(censo_df, a.año, a.clusters)
+        filas, total_nacional = clusters(censo_df, a.año, a.clusters, a.linkage)
 
         print(f"\n{'═' * 68}")
         print(f"  Clusters de estados vecinos — censo {a.año} ({a.clusters} clusters)")

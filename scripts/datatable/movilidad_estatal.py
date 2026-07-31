@@ -11,26 +11,58 @@ Ambos miden cosas distintas y no son comparables entre sí — en 2020, 3.8 M de
 cambiaron de entidad en 5 años (movilidad), pero 21.6 M residen en una entidad distinta a
 la de su nacimiento (nacimiento).
 
+── --convergencia: cómo se arman las regiones (aplica a ambos subcomandos) ───
+Agrupa las 32 entidades en regiones migratorias, en vez de reportar una sola
+entidad. Con precisión: agrupa entidades VECINAS de modo que el intercambio
+que queda DENTRO de cada región sea lo más alto posible respecto al que
+cabría esperar por el tamaño migratorio de esa región, sujeto a contigüidad
+y a tamaños balanceados. Cuatro aclaraciones sobre esa frase:
+
+1. Maximizar el intercambio interno y minimizar el externo son la misma cosa,
+   no dos objetivos: el flujo total del censo es fijo, así que bajar uno es
+   subir el otro por aritmética.
+2. NO se maximiza el intercambio interno crudo, sino su exceso sobre lo
+   esperado por azar (modularidad de Newman). La diferencia no es académica:
+   maximizar el interno crudo daría siempre un solo grupo con las 32
+   entidades (100% interno). En movilidad 2020, k=3 tiene 74.3% de
+   autocontención contra 48.6% de k=5, y aun así gana k=5 — un grupo enorme
+   que contiene a CDMX SE ESPERA que tenga mucho flujo interno sólo por su
+   tamaño, y eso no lo vuelve una región real.
+3. La contigüidad es restricción dura, no un término más a optimizar: dos
+   entidades que intercambian muchísimo pero no colindan nunca se juntan. Se
+   usa la misma tabla VECINOS de crecimiento_poblacional.py (que ya resuelve
+   Baja California / Baja California Sur, sin frontera terrestre, enlazándolas
+   a Sonora / Sinaloa). El balance de tamaños (3 a 8 entidades) es la otra
+   restricción dura: evita tanto la región de una sola entidad como el
+   mega-bloque.
+4. Es una heurística, no un óptimo garantizado (el problema es NP-difícil).
+   Las fusiones son voraces y usan un criterio LOCAL —la intensidad del
+   intercambio bidireccional entre dos entidades, relativa al tamaño
+   migratorio de cada una, ponderada por el volumen de personas que mueve el
+   vínculo— que no es el mismo que la modularidad. Por eso al final corre una
+   búsqueda local que mueve entidades sueltas entre regiones colindantes
+   mientras eso suba la modularidad (sube ~1.5% en promedio). Al terminar se
+   garantiza que ningún movimiento de UNA sola entidad mejora; un intercambio
+   simultáneo de dos todavía podría.
+
+El número de grupos K se fija con --k; si se omite se prueban K=5, 6 y 7 y
+gana el de mayor modularidad, descartando primero los K que produzcan un
+grupo de más de 8 entidades. --accum no interviene en el agrupamiento: sólo
+decide cuántas regiones contraparte se listan por grupo en el reporte.
+
 ── nacimiento ────────────────────────────────────────────────────────────────
 Fuente: dashboard_data/ccpv_nacimiento_estatal.parquet
         (generada por scripts/prepare_ccpv_nacimiento.py)
 
---convergencia agrupa las 32 entidades en UN solo conjunto de clusters (no
-por volumen) en vez de reportar una sola entidad. El perfil de cada entidad
-se recorta primero a sus contrapartes candidatas: las que están
-simultáneamente en su top-`--accum`% de inmigración Y de emigración (misma
-intersección que se muestra sin --inmigracion/--emigracion en el reporte de
-una sola entidad); el perfil de agrupamiento es el promedio de su perfil de
-emigración y de inmigración sobre esas candidatas — ya no dos agrupamientos
-separados por dirección. El número de grupos K se fija con --k, o se
-autodetecta (silhouette score) si se omite. Por default cubre los 4 censos
-1950-1980.
+--convergencia (ver el bloque de arriba para el algoritmo) arma las regiones
+sobre la matriz de migración acumulada por lugar de nacimiento. Por default
+cubre los 4 censos 1950-1980. Incompatible con --entidad.
 
 --inmigracion/--emigracion no requieren --map: filtran el reporte a mostrar
 sólo esa dirección. Con --entidad, filtran cuál de las dos tablas (llegadas/
 salidas) se imprime; sin --entidad, imprimen el ranking nacional de
-entidades receptoras/emisoras (mismos datos que --convergencia, agregados
-por entidad en vez de por perfil).
+entidades receptoras/emisoras (misma matriz que --convergencia, agregada por
+entidad en vez de agrupada en regiones).
 
 --map genera un diagrama de flujo HTML (dashboard_data/), siempre para un
 censo suelto. --map geo (default) dibuja arcos sobre el mapa real de México
@@ -66,23 +98,16 @@ Fuente: dashboard_data/ccpv_migracion_estatal.parquet y
         dashboard_data/ccpv_extranjeros_pais_2020.parquet
         (generadas por scripts/prepare_ccpv_migracion.py)
 
---convergencia agrupa las 32 entidades en UN solo conjunto de clusters (no
-por volumen) por perfil de movilidad del quinquenio. El perfil de cada
-entidad se recorta primero a sus contrapartes candidatas: las que están
-simultáneamente en su top-`--accum`% de inmigración Y de emigración (misma
-intersección que se muestra sin --inmigracion/--emigracion en el reporte de
-una sola entidad); el perfil de agrupamiento es el promedio de su perfil de
-emigración y de inmigración sobre esas candidatas — ya no dos agrupamientos
-separados por dirección. K se fija con --k, o se autodetecta (silhouette
-score) si se omite. 2015 (Encuesta Intercensal) no trae matriz
-origen-destino y se excluye del default; --año 2015 con --convergencia se
-rechaza explícitamente.
+--convergencia (ver el bloque de arriba para el algoritmo) arma las regiones
+sobre la matriz de movilidad del quinquenio. 2015 (Encuesta Intercensal) no
+trae matriz origen-destino y se excluye del default; --año 2015 con
+--convergencia se rechaza explícitamente. Incompatible con --entidad.
 
 --inmigracion/--emigracion no requieren --map: filtran el reporte a mostrar
 sólo esa dirección. Con --entidad, filtran cuál de las dos tablas (llegadas/
 salidas) se imprime; sin --entidad, imprimen el ranking nacional de
-entidades receptoras/emisoras del quinquenio (mismos datos que
---convergencia, agregados por entidad en vez de por perfil).
+entidades receptoras/emisoras del quinquenio (misma matriz que
+--convergencia, agregada por entidad en vez de agrupada en regiones).
 
 --map genera un diagrama de flujo HTML (dashboard_data/), siempre para un
 censo suelto (2015 excluido, sin matriz origen-destino). --map geo (default)
@@ -127,9 +152,6 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 import plotly.graph_objects as go
-from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics import silhouette_score
-from sklearn.metrics.pairwise import cosine_similarity
 
 RAIZ = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -138,7 +160,7 @@ sys.path.insert(0, str(RAIZ / "scripts" / "centralismo"))
 from comun import NOMBRE, normalizar_estado
 from prepare_ccpv_nacimiento import TERRITORIOS
 from prepare_ccpv_migracion import EMIGRANTES_AGREGADO
-from crecimiento_poblacional import centroides
+from crecimiento_poblacional import centroides, VECINOS, _conectado
 
 DIR = RAIZ / "dashboard_data"
 
@@ -614,76 +636,220 @@ def _tabla_flujo_nacional(cves, matriz, direccion, accum):
     _tabla(titulo, df, "entidad", int(matriz.sum()), accum)
 
 
-# ── Compartido: matemática de clustering por perfil de preferencia ─────────
+# ── Compartido: regionalización por intercambio migratorio ─────────────────
 
-def _perfiles(matriz, eje):
-    """Normaliza cada fila (eje='origen': % de los emigrantes de ese estado
-    que va a cada destino) o cada columna (eje='destino': % de los
-    inmigrantes de ese estado que viene de cada origen) para que sumen 1 —
-    perfil de PREFERENCIA, no de volumen."""
-    m = matriz if eje == "origen" else matriz.T
-    sumas = m.sum(axis=1, keepdims=True)
-    sumas[sumas == 0] = 1
-    return m / sumas
+MIN_CLUSTER, MAX_CLUSTER = 3, 8
+K_RANGO = (5, 6, 7)
 
 
-def _candidatos_interseccion(matriz, accum):
-    """Para cada entidad (fila/columna `i` de `matriz`), calcula el conjunto
-    de contrapartes que están simultáneamente en su top-`accum`% de
-    emigración (matriz[i,:], mayor a menor) y su top-`accum`% de inmigración
-    (matriz[:,i], mayor a menor) — mismo criterio que _interseccion_flujos,
-    aplicado a las 32 entidades a la vez en vez de a una sola vía --entidad.
-    Devuelve una lista de sets de índices (uno por fila/columna de
-    `matriz`), usada para filtrar candidatos antes de --convergencia."""
-    n = matriz.shape[0]
-    candidatos = []
-    for i in range(n):
-        fila, col = matriz[i, :], matriz[:, i]
-        orden_emi = np.argsort(fila)[::-1]
-        orden_inm = np.argsort(col)[::-1]
-        n_emi = _n_hasta_accum(fila[orden_emi].tolist(), float(fila.sum()), accum)
-        n_inm = _n_hasta_accum(col[orden_inm].tolist(), float(col.sum()), accum)
-        set_emi = {j for j in orden_emi[:n_emi] if fila[j] > 0}
-        set_inm = {j for j in orden_inm[:n_inm] if col[j] > 0}
-        candidatos.append(set_emi & set_inm)
-    return candidatos
+def _intercambio(matriz):
+    """Flujo bidireccional bruto entre cada par de entidades: F[i,j] =
+    inmigración + emigración entre i y j (matriz[i,j] + matriz[j,i]). Es el
+    PESO del vínculo, en personas."""
+    return matriz + matriz.T
 
 
-def _filtrar_perfiles_candidatos(perfiles, candidatos):
-    """Pone en cero, en cada fila de `perfiles`, las columnas que no están en
-    el set de candidatos correspondiente (salida de _candidatos_interseccion),
-    y renormaliza la fila para que siga sumando 1 — perfil de preferencia
-    calculado sólo entre candidatos."""
-    filtrado = np.zeros_like(perfiles)
-    for i, candidatos_i in enumerate(candidatos):
-        idx = list(candidatos_i)
-        if idx:
-            filtrado[i, idx] = perfiles[i, idx]
-        suma = filtrado[i].sum()
-        if suma > 0:
-            filtrado[i] /= suma
-    return filtrado
+def _afinidad_intercambio(matriz):
+    """Intensidad relativa del vínculo i–j: F[i,j] / sqrt(T_i · T_j), con
+    T_i = todo lo que sale de i más todo lo que entra a i. Mide qué tan
+    importante es el vínculo para ambas partes, no si i y j mandan gente a
+    los mismos lugares (eso es lo que medía el perfil coseno anterior, y lo
+    que producía un mega-grupo con todo el centro: todos mandan a CDMX)."""
+    total = matriz.sum(axis=1) + matriz.sum(axis=0)
+    total[total == 0] = 1
+    return _intercambio(matriz) / np.sqrt(np.outer(total, total))
 
 
-def _clusterizar(perfiles, k):
-    """Agrupa filas de `perfiles` por similitud coseno (distancia = 1 -
-    similitud). Con k dado, clustering jerárquico manual; con k=None, prueba
-    k=2..10 y elige el que maximiza el silhouette score (automático)."""
-    dist = np.clip(1 - cosine_similarity(perfiles), 0, None)
-    np.fill_diagonal(dist, 0)
+def _adyacencia(cves):
+    """Matriz de adyacencia geográfica (VECINOS) en el orden de `cves`."""
+    return np.array([[1 if b in VECINOS[a] else 0 for b in cves] for a in cves])
+
+
+def _fusionar(afinidad, intercambio, adyacentes, indices, k, min_size, max_size):
+    """Aglomeración jerárquica sobre `indices`, restringida a fusionar sólo
+    grupos geográficamente adyacentes (pares en `adyacentes`), hasta quedar
+    con `k` grupos. La afinidad entre dos grupos es el promedio de la
+    afinidad de sus pares de entidades PONDERADO POR EL INTERCAMBIO (personas)
+    de cada par: un vínculo que mueve mucha gente pesa más que uno marginal,
+    aunque los dos sean proporcionalmente fuertes. Dos reglas de balance:
+    mientras exista un grupo de menos de `min_size` entidades sólo se
+    consideran fusiones que lo involucren (los chicos se absorben antes de
+    que el loop termine), y no se fusiona por encima de `max_size` mientras
+    haya alguna otra fusión posible."""
+    grupos = {i: {i} for i in indices}
+
+    def adyacente(a, b):
+        return any((i, j) in adyacentes for i in grupos[a] for j in grupos[b])
+
+    def peso(a, b):
+        pares = [(i, j) for i in grupos[a] for j in grupos[b]]
+        w = np.array([intercambio[i, j] for i, j in pares])
+        v = np.array([afinidad[i, j] for i, j in pares])
+        return float((v * w).sum() / w.sum()) if w.sum() > 0 else float(v.mean())
+
+    def mejor(respeta_tope, solo_chicos):
+        chicos = {c for c in grupos if len(grupos[c]) < min_size}
+        elegida = None
+        for a in grupos:
+            for b in grupos:
+                if b <= a or not adyacente(a, b):
+                    continue
+                if solo_chicos and chicos and a not in chicos and b not in chicos:
+                    continue
+                if respeta_tope and len(grupos[a]) + len(grupos[b]) > max_size:
+                    continue
+                p = peso(a, b)
+                if elegida is None or p > elegida[0]:
+                    elegida = (p, a, b)
+        return elegida
+
+    while len(grupos) > k:
+        fusion = (mejor(True, True) or mejor(False, True)
+                  or mejor(True, False) or mejor(False, False))
+        if fusion is None:
+            break
+        _, a, b = fusion
+        grupos[a] |= grupos[b]
+        del grupos[b]
+    return list(grupos.values())
+
+
+def _modularidad(grupos, intercambio):
+    """Modularidad de Newman sobre la red de intercambio migratorio: qué
+    fracción del VOLUMEN de flujo queda dentro de los grupos, menos la que
+    quedaría por puro azar dado el tamaño migratorio de cada grupo. A
+    diferencia del silhouette (que sólo mira la geometría de las distancias),
+    pondera cada vínculo por la gente que mueve."""
+    total = intercambio.sum()
+    grado = intercambio.sum(axis=1)
+    return sum(intercambio[np.ix_(list(g), list(g))].sum() / total
+               - (grado[list(g)].sum() / total) ** 2 for g in grupos)
+
+
+def _refinar(grupos, intercambio, vecinos):
+    """Búsqueda local sobre el resultado de _fusionar: mueve una entidad al
+    grupo colindante que más suba la modularidad, y repite hasta que ningún
+    movimiento mejore. Las fusiones son voraces y nunca se reconsideran, así
+    que una decisión tomada cuando los grupos eran de 1-2 entidades queda
+    congelada aunque después resulte mala; esta pasada la corrige. Respeta
+    las mismas restricciones: contigüidad de ambos grupos, `k` constante y
+    tamaños dentro de [MIN_CLUSTER, MAX_CLUSTER]."""
+    grupos = [set(g) for g in grupos]
+    mejor = _modularidad(grupos, intercambio)
+    while True:
+        candidata = None
+        for origen, g_origen in enumerate(grupos):
+            if len(g_origen) <= MIN_CLUSTER:      # moverla dejaría el grupo bajo el mínimo
+                continue
+            for i in sorted(g_origen):
+                if not _conectado(g_origen - {i}, vecinos):
+                    continue
+                for destino, g_destino in enumerate(grupos):
+                    if destino == origen or len(g_destino) >= MAX_CLUSTER:
+                        continue
+                    if not vecinos[i] & g_destino:  # i no colinda con ese grupo
+                        continue
+                    propuesta = [set(g) for g in grupos]
+                    propuesta[origen].discard(i)
+                    propuesta[destino].add(i)
+                    q = _modularidad(propuesta, intercambio)
+                    if q > mejor + 1e-12 and (candidata is None or q > candidata[0]):
+                        candidata = (q, propuesta)
+        if candidata is None:
+            return grupos
+        mejor, grupos = candidata
+
+
+def _agrupar_contiguo(afinidad, intercambio, adj, k):
+    """Regionalización en `k` grupos contiguos y balanceados (ver _fusionar).
+    Si al llegar a `k` sobrevive algún grupo bajo MIN_CLUSTER, se fusiona con
+    el grupo vecino con el que más intercambio tiene y se parte en dos el
+    grupo más grande, para conservar `k` exacto. Al final se afina con
+    _refinar. Devuelve una lista de sets de índices."""
+    n = afinidad.shape[0]
+    adyacentes = {(i, j) for i in range(n) for j in range(n) if adj[i, j]}
+    grupos = _fusionar(afinidad, intercambio, adyacentes, range(n), k,
+                       MIN_CLUSTER, MAX_CLUSTER)
+    for _ in range(10):
+        chicos = [g for g in grupos if len(g) < MIN_CLUSTER]
+        if not chicos:
+            break
+        chico = min(chicos, key=len)
+        grupos.remove(chico)
+        colindantes = [g for g in grupos
+                       if any((i, j) in adyacentes for i in chico for j in g)]
+        destino = max(colindantes, key=lambda g: intercambio[np.ix_(list(chico), list(g))].sum())
+        grupos.remove(destino)
+        grupos.append(chico | destino)
+        mayor = max(grupos, key=len)
+        grupos.remove(mayor)
+        grupos.extend(_fusionar(afinidad, intercambio, adyacentes, list(mayor), 2,
+                                1, len(mayor) - 1))
+    return _refinar(grupos, intercambio,
+                    {i: {j for j in range(n) if adj[i, j]} for i in range(n)})
+
+
+def _clusterizar(afinidad, intercambio, adj, k):
+    """Con `k` dado, agrupa directo. Con k=None, agrupa con cada k de K_RANGO
+    y elige el de mayor modularidad, descartando primero los k cuyo grupo más
+    grande excede MAX_CLUSTER (si ninguno cumple, no descarta) — eso es lo que
+    evita el mega-grupo del centro. Devuelve (etiquetas, k_usado,
+    modularidad)."""
     if k is not None:
-        etiquetas = AgglomerativeClustering(
-            n_clusters=k, metric="precomputed", linkage="average").fit_predict(dist)
-        return etiquetas, k, silhouette_score(dist, etiquetas, metric="precomputed")
+        grupos = _agrupar_contiguo(afinidad, intercambio, adj, k)
+        return _etiquetas(grupos, afinidad.shape[0]), k, _modularidad(grupos, intercambio)
 
-    mejor = None
-    for candidato in range(2, min(10, len(perfiles) - 1) + 1):
-        etiquetas = AgglomerativeClustering(
-            n_clusters=candidato, metric="precomputed", linkage="average").fit_predict(dist)
-        score = silhouette_score(dist, etiquetas, metric="precomputed")
-        if mejor is None or score > mejor[2]:
-            mejor = (etiquetas, candidato, score)
-    return mejor
+    por_k = {c: _agrupar_contiguo(afinidad, intercambio, adj, c) for c in K_RANGO}
+    viables = [c for c in K_RANGO if max(len(g) for g in por_k[c]) <= MAX_CLUSTER]
+    mejor = max(viables or K_RANGO, key=lambda c: _modularidad(por_k[c], intercambio))
+    grupos = por_k[mejor]
+    return _etiquetas(grupos, afinidad.shape[0]), mejor, _modularidad(grupos, intercambio)
+
+
+def _etiquetas(grupos, n):
+    """Lista de sets de índices → arreglo de etiquetas por índice, numeradas
+    de mayor a menor tamaño de grupo."""
+    etiquetas = np.zeros(n, dtype=int)
+    for etiqueta, g in enumerate(sorted(grupos, key=len, reverse=True)):
+        for i in g:
+            etiquetas[i] = etiqueta
+    return etiquetas
+
+
+def _reporte_grupos(cves, matriz, etiquetas, accum, territorios=()):
+    """Imprime cada región: sus entidades, el intercambio que se queda
+    adentro, la autocontención (qué % de lo que sale —resp. entra— del grupo
+    no cruza su frontera: la métrica estándar para juzgar si una región
+    funcional tiene sentido) y con qué otras regiones intercambia, hasta
+    acumular `accum`% del flujo externo. Devuelve la autocontención global."""
+    idx = {}
+    for i, etq in enumerate(etiquetas):
+        idx.setdefault(int(etq), []).append(i)
+
+    interno_total = sum(matriz[np.ix_(m, m)].sum() for m in idx.values())
+    for etq in sorted(idx):
+        miembros = idx[etq]
+        print(f"\n  Grupo {etq + 1}: "
+              f"{', '.join(sorted(NOMBRE[cves[i]] for i in miembros))}")
+        interno = matriz[np.ix_(miembros, miembros)].sum()
+        sale = matriz[miembros, :].sum()
+        entra = matriz[:, miembros].sum()
+        print(f"    Intercambio interno: {int(interno):,} personas")
+        print(f"    Autocontención:  emigración {interno / sale * 100:>5.1f}%"
+              f"   inmigración {interno / entra * 100:>5.1f}%")
+
+        cruzado = {otro: (matriz[np.ix_(miembros, o)].sum() + matriz[np.ix_(o, miembros)].sum())
+                   for otro, o in idx.items() if otro != etq}
+        orden = sorted(cruzado, key=cruzado.get, reverse=True)
+        total_cruzado = sum(cruzado.values())
+        n_mostrar = _n_hasta_accum([cruzado[o] for o in orden], total_cruzado, accum)
+        print("    Intercambio con otros grupos:")
+        for otro in orden[:n_mostrar]:
+            print(f"      Grupo {otro + 1:<18} {int(cruzado[otro]):>12,}"
+                  f" {cruzado[otro] / total_cruzado * 100:>6.1f}%")
+        if any(cves[i] in territorios for i in miembros):
+            print("    * incluye entidad(es) que aún eran territorio federal en este censo")
+    return interno_total / matriz.sum()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -837,63 +1003,31 @@ def _flujo_entidad_nacimiento(df, cve, censo, direccion) -> pl.DataFrame:
 
 
 def convergencia_nacimiento(df, censo, k, accum):
-    """Agrupa las entidades de un censo en UN solo conjunto de clusters, a
-    partir del perfil de sus contrapartes candidatas: las que están
-    simultáneamente en su top-`accum`% de inmigración Y de emigración
-    (mismo criterio que _interseccion_flujos, vía _candidatos_interseccion).
-    El perfil de clustering es el promedio del perfil de emigración y de
-    inmigración de esas candidatas (_filtrar_perfiles_candidatos aplicado a
-    ambas direcciones) — ya no dos agrupamientos separados por dirección.
-    Imprime, por grupo, sus miembros y las contrapartes compartidas
-    dominantes con su % de emigración y de inmigración. Devuelve
-    {cve_ent: cluster_id} para --guardar."""
+    """Agrupa las entidades de un censo en regiones migratorias: bloques de
+    estados VECINOS (contiguos, sin saltos) que intercambian mucha gente
+    entre sí. La afinidad entre dos entidades es la intensidad de su
+    intercambio bidireccional (_afinidad_intercambio), ponderada por el
+    volumen de personas que mueve (_agrupar_contiguo). Sin `k`, se elige
+    entre 5, 6 y 7 grupos el de mayor modularidad. Imprime, por grupo, sus
+    entidades, su autocontención y con qué otras regiones intercambia.
+    Devuelve {cve_ent: cluster_id} para --guardar."""
     cves, matriz = _matriz_flujo_nacimiento(df, censo)
-    nombre = {c: NOMBRE[c] for c in cves}
-    candidatos = _candidatos_interseccion(matriz, accum)
-    perfil_emi = _filtrar_perfiles_candidatos(_perfiles(matriz, "origen"), candidatos)
-    perfil_inm = _filtrar_perfiles_candidatos(_perfiles(matriz, "destino"), candidatos)
-    perfil = perfil_emi + perfil_inm
-    sumas = perfil.sum(axis=1, keepdims=True)
-    sumas[sumas == 0] = 1
-    perfil = perfil / sumas
+    intercambio = _intercambio(matriz)
+    afinidad = _afinidad_intercambio(matriz)
 
     print(f"\n{'═' * 78}")
-    print(f"  Convergencia de flujos migratorios — Censo {censo}")
-    print(f"  Un solo agrupamiento por perfil combinado (emigración + inmigración)")
-    print(f"  de las contrapartes candidatas en la intersección de cada entidad")
-    print(f"  (accum {accum:g}%)")
+    print(f"  Regiones migratorias por intercambio — Censo {censo}")
+    print(f"  Grupos de entidades vecinas que más migrantes intercambian entre sí")
     print("═" * 78)
 
-    etiquetas, k_usado, score = _clusterizar(perfil, k)
-    resultado = {int(c): int(e) for c, e in zip(cves, etiquetas)}
-
-    if k is None:
-        print(f"\n  (k={k_usado} elegido automáticamente vía silhouette score = {score:.3f})")
-    grupos = {}
-    for cve, etq in zip(cves, etiquetas):
-        grupos.setdefault(int(etq), []).append(cve)
-
-    for cluster_id in sorted(grupos):
-        miembros = grupos[cluster_id]
-        print(f"\n  Grupo {cluster_id + 1}: {', '.join(sorted(nombre[c] for c in miembros))}")
-        idx_miembros = [cves.index(c) for c in miembros]
-        perfil_medio = perfil[idx_miembros].mean(axis=0)
-        perfil_medio_emi = perfil_emi[idx_miembros].mean(axis=0)
-        perfil_medio_inm = perfil_inm[idx_miembros].mean(axis=0)
-        print(f"    Contrapartes compartidas (promedio del grupo):")
-        print(f"      {'':<24} {'Emigración':>11} {'Inmigración':>12}")
-        orden = np.argsort(perfil_medio)[::-1]
-        valores_ordenados = perfil_medio[orden]
-        n_mostrar = _n_hasta_accum(valores_ordenados.tolist(), float(valores_ordenados.sum()), accum)
-        for i in orden[:n_mostrar]:
-            if perfil_medio[i] <= 0:
-                continue
-            print(f"      {nombre[cves[i]]:<24} {perfil_medio_emi[i] * 100:>10.1f}%"
-                  f" {perfil_medio_inm[i] * 100:>11.1f}%")
-        if any(c in TERRITORIOS.get(censo, ()) for c in miembros):
-            print("    * incluye entidad(es) que aún eran territorio federal en este censo")
-    print()
-    return resultado
+    etiquetas, k_usado, modularidad = _clusterizar(afinidad, intercambio,
+                                                   _adyacencia(cves), k)
+    autocontencion = _reporte_grupos(cves, matriz, etiquetas, accum,
+                                     TERRITORIOS.get(censo, ()))
+    print(f"\n  {k_usado} regiones{'' if k else ' (elegidas automáticamente)'} — "
+          f"modularidad {modularidad:.3f}, "
+          f"autocontención global {autocontencion * 100:.1f}%\n")
+    return {int(c): int(e) for c, e in zip(cves, etiquetas)}
 
 
 def main_nacimiento(a):
@@ -1254,61 +1388,30 @@ def _flujo_entidad_movilidad(mig, cve, censo, direccion) -> pl.DataFrame:
 
 
 def convergencia_movilidad(mig, censo, k, accum):
-    """Agrupa las entidades de un censo en UN solo conjunto de clusters, a
-    partir del perfil de sus contrapartes candidatas: las que están
-    simultáneamente en su top-`accum`% de inmigración Y de emigración del
-    quinquenio (mismo criterio que _interseccion_flujos, vía
-    _candidatos_interseccion). El perfil de clustering es el promedio del
-    perfil de emigración y de inmigración de esas candidatas
-    (_filtrar_perfiles_candidatos aplicado a ambas direcciones) — ya no dos
-    agrupamientos separados por dirección. Imprime, por grupo, sus miembros
-    y las contrapartes compartidas dominantes con su % de emigración y de
-    inmigración. Devuelve {cve_ent: cluster_id} para --guardar."""
+    """Agrupa las entidades de un censo en regiones migratorias: bloques de
+    estados VECINOS (contiguos, sin saltos) que intercambian mucha gente
+    entre sí durante el quinquenio. La afinidad entre dos entidades es la
+    intensidad de su intercambio bidireccional (_afinidad_intercambio),
+    ponderada por el volumen de personas que mueve (_agrupar_contiguo). Sin
+    `k`, se elige entre 5, 6 y 7 grupos el de mayor modularidad. Imprime, por
+    grupo, sus entidades, su autocontención y con qué otras regiones
+    intercambia. Devuelve {cve_ent: cluster_id} para --guardar."""
     cves, matriz = _matriz_flujo_movilidad(mig, censo)
-    nombre = {c: NOMBRE[c] for c in cves}
-    candidatos = _candidatos_interseccion(matriz, accum)
-    perfil_emi = _filtrar_perfiles_candidatos(_perfiles(matriz, "origen"), candidatos)
-    perfil_inm = _filtrar_perfiles_candidatos(_perfiles(matriz, "destino"), candidatos)
-    perfil = perfil_emi + perfil_inm
-    sumas = perfil.sum(axis=1, keepdims=True)
-    sumas[sumas == 0] = 1
-    perfil = perfil / sumas
+    intercambio = _intercambio(matriz)
+    afinidad = _afinidad_intercambio(matriz)
 
     print(f"\n{'═' * 78}")
-    print(f"  Convergencia de movilidad interestatal — Censo {censo} ({VENTANA[censo]})")
-    print(f"  Un solo agrupamiento por perfil combinado (emigración + inmigración)")
-    print(f"  de las contrapartes candidatas en la intersección de cada entidad")
-    print(f"  (accum {accum:g}%)")
+    print(f"  Regiones migratorias por intercambio — Censo {censo} ({VENTANA[censo]})")
+    print(f"  Grupos de entidades vecinas que más migrantes intercambian entre sí")
     print("═" * 78)
 
-    etiquetas, k_usado, score = _clusterizar(perfil, k)
-    resultado = {int(c): int(e) for c, e in zip(cves, etiquetas)}
-
-    if k is None:
-        print(f"\n  (k={k_usado} elegido automáticamente vía silhouette score = {score:.3f})")
-    grupos = {}
-    for cve, etq in zip(cves, etiquetas):
-        grupos.setdefault(int(etq), []).append(cve)
-
-    for cluster_id in sorted(grupos):
-        miembros = grupos[cluster_id]
-        print(f"\n  Grupo {cluster_id + 1}: {', '.join(sorted(nombre[c] for c in miembros))}")
-        idx_miembros = [cves.index(c) for c in miembros]
-        perfil_medio = perfil[idx_miembros].mean(axis=0)
-        perfil_medio_emi = perfil_emi[idx_miembros].mean(axis=0)
-        perfil_medio_inm = perfil_inm[idx_miembros].mean(axis=0)
-        print(f"    Contrapartes compartidas (promedio del grupo):")
-        print(f"      {'':<24} {'Emigración':>11} {'Inmigración':>12}")
-        orden = np.argsort(perfil_medio)[::-1]
-        valores_ordenados = perfil_medio[orden]
-        n_mostrar = _n_hasta_accum(valores_ordenados.tolist(), float(valores_ordenados.sum()), accum)
-        for i in orden[:n_mostrar]:
-            if perfil_medio[i] <= 0:
-                continue
-            print(f"      {nombre[cves[i]]:<24} {perfil_medio_emi[i] * 100:>10.1f}%"
-                  f" {perfil_medio_inm[i] * 100:>11.1f}%")
-    print()
-    return resultado
+    etiquetas, k_usado, modularidad = _clusterizar(afinidad, intercambio,
+                                                   _adyacencia(cves), k)
+    autocontencion = _reporte_grupos(cves, matriz, etiquetas, accum)
+    print(f"\n  {k_usado} regiones{'' if k else ' (elegidas automáticamente)'} — "
+          f"modularidad {modularidad:.3f}, "
+          f"autocontención global {autocontencion * 100:.1f}%\n")
+    return {int(c): int(e) for c, e in zip(cves, etiquetas)}
 
 
 def main_movilidad(a):
@@ -1416,18 +1519,19 @@ def build_parser():
     p_nac.add_argument("--accum", type=_accum, default=80,
                    help="%% acumulado del share a mostrar en tablas y diagramas (default 80): "
                         "se listan las filas de mayor a menor volumen hasta acumular ese %%. "
-                        "Con --convergencia, además decide qué contrapartes cuentan como "
-                        "candidatas (intersección inmigración∩emigración) antes de agrupar")
+                        "Con --convergencia, decide cuántas regiones contraparte se listan "
+                        "por grupo (no afecta el agrupamiento)")
     p_nac.add_argument("--serie", action="store_true",
                    help="Trayectoria de la entidad en los 8 censos, en vez del detalle")
     p_nac.add_argument("--convergencia", action="store_true",
-                   help="Agrupa las 32 entidades por similitud de perfil migratorio "
-                        "(destinos preferentes en emigración, fuentes preferentes en "
-                        "inmigración) en vez de reportar una sola entidad. Incompatible "
-                        "con --entidad")
+                   help="Agrupa las 32 entidades en regiones migratorias —bloques de "
+                        "estados vecinos que más migrantes intercambian entre sí, "
+                        "ponderando por el volumen del flujo— en vez de reportar una sola "
+                        "entidad. Incompatible con --entidad")
     p_nac.add_argument("--k", type=_k, default=None,
-                   help="Número de grupos para --convergencia. Si se omite, se "
-                        "autodetecta vía silhouette score (k=2..10)")
+                   help="Número de grupos para --convergencia. Si se omite, se prueban "
+                        "k=5, 6 y 7 y gana el de mayor modularidad (descartando los que "
+                        "produzcan un grupo de más de 8 entidades)")
     p_nac.add_argument("--map", nargs="?", choices=["geo", "sankey", "chord"], const="geo", default=None,
                    help="Genera un diagrama de flujo HTML en dashboard_data/. Requiere --año "
                         "(censo suelto). --map geo (default) arcos sobre el mapa de México, "
@@ -1466,16 +1570,18 @@ def build_parser():
     p_mov.add_argument("--accum", type=_accum, default=80,
                    help="%% acumulado del share a mostrar en tablas y diagramas (default 80): "
                         "se listan las filas de mayor a menor volumen hasta acumular ese %%. "
-                        "Con --convergencia, además decide qué contrapartes cuentan como "
-                        "candidatas (intersección inmigración∩emigración) antes de agrupar")
+                        "Con --convergencia, decide cuántas regiones contraparte se listan "
+                        "por grupo (no afecta el agrupamiento)")
     p_mov.add_argument("--convergencia", action="store_true",
-                   help="Agrupa las 32 entidades por similitud de perfil de movilidad "
-                        "(destinos preferentes en emigración, fuentes preferentes en "
-                        "inmigración) en vez de reportar una sola entidad. Incompatible "
-                        "con --entidad; no aplica a 2015 (sin matriz origen-destino)")
+                   help="Agrupa las 32 entidades en regiones migratorias —bloques de "
+                        "estados vecinos que más migrantes intercambian entre sí, "
+                        "ponderando por el volumen del flujo— en vez de reportar una sola "
+                        "entidad. Incompatible con --entidad; no aplica a 2015 (sin "
+                        "matriz origen-destino)")
     p_mov.add_argument("--k", type=_k, default=None,
-                   help="Número de grupos para --convergencia. Si se omite, se "
-                        "autodetecta vía silhouette score (k=2..10)")
+                   help="Número de grupos para --convergencia. Si se omite, se prueban "
+                        "k=5, 6 y 7 y gana el de mayor modularidad (descartando los que "
+                        "produzcan un grupo de más de 8 entidades)")
     p_mov.add_argument("--map", nargs="?", choices=["geo", "sankey", "chord"], const="geo", default=None,
                    help="Genera un diagrama de flujo HTML en dashboard_data/. Requiere --año "
                         "(censo suelto, 2015 excluido). --map geo (default) arcos sobre el "
