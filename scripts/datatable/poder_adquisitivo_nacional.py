@@ -6,14 +6,14 @@ de un año base.
 ingreso_hora = ingocup / (hrsocup * 4.345)  (igual que horas_trabajo_para_monto.py)
 valor_real[año] = valor_nominal[año] * indice_inpc[año_base] / indice_inpc[año]
 
-Fuente de precios: data/inegi/inpc/Indicadores20260719173842.xls — INPC
-nacional (única área geográfica disponible; no hay INPC por ciudad ni
-CONEVAL Línea de Bienestar por entidad en este repo, de ahí que esta serie
-sea SOLO nacional, sin comparación entre estados). El archivo trae
-únicamente "Inflación mensual interanual (Variación Porcentual)", no el
-nivel del índice — se reconstruye un índice encadenado promediando la
-inflación interanual mensual disponible por año. Esto es una APROXIMACIÓN
-(no un encadenamiento mes a mes del nivel real del INPC).
+Fuente de precios: data/inegi/inpc/conjunto_de_datos_inpc_indicador_mensual_csv.zip
+— índice INPC oficial mensual de INEGI (nivel del índice, no variación),
+cobertura nacional (única área geográfica disponible; no hay INPC por ciudad
+ni CONEVAL Línea de Bienestar por entidad en este repo, de ahí que esta serie
+sea SOLO nacional, sin comparación entre estados). El índice anual usado para
+deflactar es el promedio de los niveles mensuales oficiales de cada año
+(CONCEPTO = "...Precios al Consumidor (INPC)", el agregado general, no los
+subíndices subyacente/no subyacente).
 
 Fuente de salarios: data/inegi/enoe/ (sdem, 2005-2026), reutilizando
 cargar_enoe_año_completo/weighted_quantile de horas_trabajo_para_monto.py.
@@ -25,6 +25,7 @@ Run: uv run python scripts/datatable/poder_adquisitivo_nacional.py [--año-base 
 
 import argparse
 import sys
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -32,29 +33,29 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from horas_trabajo_para_monto import ENOEN_WINDOW, cargar_enoe_año_completo, weighted_quantile
 
-INPC_PATH = Path(__file__).resolve().parents[2] / "data" / "inegi" / "inpc" / "Indicadores20260719173842.xls"
+INPC_PATH = Path(__file__).resolve().parents[2] / "data" / "inegi" / "inpc" / "conjunto_de_datos_inpc_indicador_mensual_csv.zip"
+INPC_MEMBER = "conjunto_de_datos/conjunto_de_datos_inpc_mensual.csv"
+INPC_CONCEPTO = (
+    "Índice nacional de precios al consumidor (mensual), Resumen, "
+    "Subíndices subyacente y complementarios, Precios al Consumidor (INPC)"
+)
 AÑO_INPC_INICIO = 2008
 AÑO_ENOE_FIN = 2026
 
 
 def cargar_indice_inpc() -> pd.DataFrame:
-    """Reconstruye un índice de precios anual (base=primer año=100) a partir
-    de la inflación interanual mensual del INPC (única serie disponible en
-    el archivo). Devuelve columnas: año, meses_disponibles, indice."""
-    raw = pd.read_excel(INPC_PATH, header=None, skiprows=6)
-    raw.columns = ["periodo", "area", "interanual_pct"]
-    raw = raw[raw["area"] == "00 Estados Unidos Mexicanos"].copy()
-    raw["año"] = raw["periodo"].str.split("/").str[0].astype(int)
+    """Índice de precios anual = promedio del nivel mensual oficial del INPC
+    (INEGI, cobertura nacional) por año. Devuelve columnas: año,
+    meses_disponibles, indice."""
+    with zipfile.ZipFile(INPC_PATH) as zf:
+        raw = pd.read_csv(zf.open(INPC_MEMBER))
+    raw = raw[raw["CONCEPTO"] == INPC_CONCEPTO].copy()
+    assert not raw.empty, f"No se encontraron filas con CONCEPTO={INPC_CONCEPTO!r} en {INPC_PATH}"
+    raw["año"] = pd.to_datetime(raw["FECHA"], format="%d/%m/%Y").dt.year
 
-    anual = raw.groupby("año")["interanual_pct"].agg(["mean", "count"]).reset_index()
-    anual = anual.rename(columns={"mean": "promedio_interanual_pct", "count": "meses_disponibles"})
-    anual = anual.sort_values("año").reset_index(drop=True)
-
-    indices = [100.0]
-    for i in range(1, len(anual)):
-        indices.append(indices[-1] * (1 + anual.loc[i, "promedio_interanual_pct"] / 100))
-    anual["indice"] = indices
-    return anual
+    anual = raw.groupby("año")["VALOR"].agg(["mean", "count"]).reset_index()
+    anual = anual.rename(columns={"mean": "indice", "count": "meses_disponibles"})
+    return anual.sort_values("año").reset_index(drop=True)
 
 
 def main():
@@ -112,9 +113,7 @@ def main():
     tabla["var_pct_interanual_real_p50"] = real_p50.pct_change() * 100
     tabla["var_pct_acumulada_real_p50"] = (real_p50 / real_p50.iloc[0] - 1) * 100
 
-    print(f"Poder adquisitivo nacional del salario/hora (ENOE, p50/p75/p95/p99), pesos constantes de {año_base}")
-    print("[aviso] índice INPC reconstruido: promedio de inflación interanual mensual por año "
-          "(aproximación, no encadenamiento mes a mes del nivel real del INPC).\n")
+    print(f"Poder adquisitivo nacional del salario/hora (ENOE, p50/p75/p95/p99), pesos constantes de {año_base}\n")
 
     parcial = tabla[tabla["meses_disponibles"] < 12]
     if not parcial.empty:
