@@ -59,6 +59,8 @@ import numpy as np
 import polars as pl
 
 ANUIES_DIR = Path("data/anuies")
+ANUIES_EDADES_DIR = ANUIES_DIR / "edades"
+ANUIES_PROCEDENCIA_DIR = ANUIES_DIR / "procedencia"
 CONAPO_ZIP = Path("data/conapo/proyecciones_poblacion/00_Republica_mexicana.zip")
 CONAPO_MEMBER = "00_Republica_mexicana/1_Grupo_Quinq_00_RM.xlsx"
 OUT_DIR = Path("dashboard_data")
@@ -81,16 +83,16 @@ def normalizar_entidad(s: str) -> str:
 
 
 def encontrar_ciclo(lag: int) -> tuple[str, Path, Path, Path]:
-    edades_files = sorted(ANUIES_DIR.glob("base_anuario_*_edades.xlsx"), reverse=True)
+    edades_files = sorted(ANUIES_EDADES_DIR.glob("base_anuario_*_edades.xlsx"), reverse=True)
     if not edades_files:
-        raise FileNotFoundError(f"No se encontraron archivos de edades (base_anuario_*_edades.xlsx) en {ANUIES_DIR}")
+        raise FileNotFoundError(f"No se encontraron archivos de edades (base_anuario_*_edades.xlsx) en {ANUIES_EDADES_DIR}")
     if lag < 0 or lag >= len(edades_files):
         ciclos = [f.stem.removeprefix("base_anuario_").removesuffix("_edades") for f in edades_files]
         raise ValueError(f"--lag {lag} fuera de rango: solo hay {len(edades_files)} ciclo(s) con edades disponibles ({ciclos})")
     edades_path = edades_files[lag]
     ciclo = edades_path.stem.removeprefix("base_anuario_").removesuffix("_edades")
 
-    procedencia_path = ANUIES_DIR / f"base_anuario_{ciclo}_procedencia.xlsx"
+    procedencia_path = ANUIES_PROCEDENCIA_DIR / f"base_anuario_{ciclo}_procedencia.xlsx"
     if not procedencia_path.exists():
         raise FileNotFoundError(f"Falta {procedencia_path} — se requiere el mismo ciclo que edades ({ciclo})")
 
