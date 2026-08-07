@@ -93,21 +93,56 @@ Sinaloa + Universidad Autónoma de Occidente, columna "Monto" de
 data/entidades_federativas/sinaloa/{año}/*nexo 10.csv — mismo modo
 "carpeta_por_año", pero en CSV con encoding iso-8859-1 en vez de xlsx; 2023
 trae el nombre de archivo en minúscula ("anexo 10.csv") vs. 2024-2025 en
-mayúscula, cubierto por el glob con comodín). Para agregar otra entidad, basta
+mayúscula, cubierto por el glob con comodín), y para **BAJA CALIFORNIA**
+(Universidad Autónoma de Baja California, única institución del subsistema en
+esa entidad, columna "Asignación Presupuestal" de
+data/entidades_federativas/baja_california/{año}/Clasificación
+[Aa]dministrativ*.xlsx — modo "carpeta_por_año"; a diferencia de las otras
+tres entidades el nombre de la institución va en la columna B, no la A
+(config["col_institucion"] = 1), y lleva un prefijo de clave presupuestal
+delante del nombre), y para **BAJA CALIFORNIA SUR** (Universidad Autónoma de
+Baja California Sur, única institución del subsistema en esa entidad, columna
+"MONTO" de data/entidades_federativas/baja_california_sur/{año}/ANEXO I-15
+SECTOR EDUCATIVO.xlsx, sección "II.- Capítulo 4000" — modo "carpeta_por_año";
+solo verificada para 2025, el archivo de 2024 tiene otra estructura y no
+incluye a la UABCS como dependencia propia; la UABCS aparece 3 veces en el
+archivo con montos distintos — estatal, federal Ramo 33, y total combinado —
+por lo que se usa config["desde_ancla"]/["hasta_ancla"] para acotar la
+búsqueda solo a la sección de financiamiento estatal). Para agregar otra entidad, basta
 con añadir una entrada a APORTACION_ESTATAL_CONFIG con el modo que corresponda
 a cómo esa entidad publica su cuenta pública; las entidades ausentes del
 diccionario muestran "s/d" en ESTATAL/TOTAL, no truenan.
 
-Dos caveats de ESTATAL/TOTAL que no se pueden resolver con los datos
+Tres caveats de ESTATAL/TOTAL que no se pueden resolver con los datos
 disponibles: (1) puede ser una cifra PARCIAL dentro de la entidad — en Sonora
 solo "Universidad de Sonora" tiene línea propia, Instituto Tecnológico de
 Sonora (la otra institución del subsistema en esa entidad) no aparece en el
-archivo estatal, así que el ESTATAL de Sonora no cubre a ITSON (Chihuahua y
-Sinaloa sí cubren a sus dos instituciones del subsistema). (2) ESTATAL no distingue nivel
+archivo estatal, así que el ESTATAL de Sonora no cubre a ITSON (Chihuahua,
+Sinaloa, Baja California y Baja California Sur sí cubren a todas sus
+instituciones del subsistema). (2) ESTATAL no distingue nivel
 (licenciatura vs. posgrado) — la fuente estatal reporta un solo monto por
 universidad, todos los niveles mezclados — mientras que FEDERAL sí está
 filtrado por nivel vía --posdoc. TOTAL, por lo tanto, siempre mezcla un
-FEDERAL de un solo nivel con un ESTATAL de todos los niveles.
+FEDERAL de un solo nivel con un ESTATAL de todos los niveles. (3) Sonora y
+Chihuahua reportan DEVENGADO (gasto ejercido), pero Baja California solo
+publica presupuesto ASIGNADO/aprobado (no hay archivo de Cuenta Pública con
+devengado en su carpeta) — comparar el ESTATAL de Baja California contra el
+de Sonora/Chihuahua mezcla dos conceptos presupuestales distintos.
+
+Con --proyectar-estatal, --states rellena con una PROYECCIÓN el ESTATAL/TOTAL
+de cualquier entidad cuyo --year pedido sea posterior al último año con dato
+REAL en su fuente (hoy solo dispara para Sonora, cuyo egresos.xlsx llega solo
+hasta 2023). La fórmula es aportación_real(último_año_real) ×
+matrícula_entidad(year) / matrícula_entidad(último_año_real) — escala el
+último dato real conocido por el cambio de matrícula del subsistema estatal
+en esa entidad, asumiendo implícitamente que el costo estatal por alumno se
+mantuvo constante desde entonces (no captura recortes/aumentos reales de
+presupuesto, inflación, ni cambios de política estatal — es una extrapolación
+mecánica, no una predicción informada). Nunca encadena una proyección sobre
+otra: siempre parte del último año con dato REAL, nunca de un año ya
+proyectado. Por default el flag está apagado y esos años muestran "s/d" como
+siempre; con el flag, las celdas proyectadas se marcan con "*" en la tabla de
+texto y con la columna `ES_PROYECTADO=True` en el parquet (--save).
 Run: uv run python scripts/prepare_comparacion_universidades.py --states --posdoc
 """
 
@@ -162,6 +197,36 @@ APORTACION_ESTATAL_CONFIG = {
         "instituciones": ["Universidad Autónoma de Sinaloa", "Universidad Autónoma de Occidente"],
         "corregir_unidad": lambda v: v,  # ya viene en pesos completos
         "encoding": "iso-8859-1",  # CSV del portal de Sinaloa no viene en UTF-8
+    },
+    "BAJA CALIFORNIA": {
+        "modo": "carpeta_por_año",  # un archivo distinto por año, adentro de ENTIDADES_DIR/baja_california/{año}/
+        "carpeta": ENTIDADES_DIR / "baja_california",
+        # el nombre del archivo cambia cada año (con/sin acento, may/minúscula,
+        # con/sin año en el nombre): "Clasificacion Administrativa 2023.xlsx",
+        # "Clasificación administrativa 2024.xlsx", "Clasificación administrativa.xlsx" (2025)
+        "glob_por_año": "Clasificaci?n [Aa]dministrativ*.xlsx",
+        "ancla_header": "Asignación Presupuestal",
+        # a diferencia de Sonora/Chihuahua/Sinaloa, el nombre de la institución
+        # va en la columna B (índice 1), no en la A
+        "col_institucion": 1,
+        # el nombre en el archivo lleva un prefijo de clave presupuestal
+        # delante, idéntico en 2023-2025 -- se hardcodea completo en vez de
+        # generalizar el emparejamiento a substring
+        "instituciones": ["2.1.1.1.4.1 UNIVERSIDAD AUTONOMA DE BAJA CALIFORNIA"],
+        "corregir_unidad": lambda v: v,  # ya viene en pesos completos
+    },
+    "BAJA CALIFORNIA SUR": {
+        "modo": "carpeta_por_año",  # un archivo distinto por año, adentro de ENTIDADES_DIR/baja_california_sur/{año}/
+        "carpeta": ENTIDADES_DIR / "baja_california_sur",
+        "glob_por_año": "ANEXO I-15*.xlsx",
+        # la UABCS aparece 3 veces en el archivo (estatal, federal Ramo 33, y
+        # total combinado) -- se acota a la sección "II.- Capítulo 4000"
+        # (Financiamiento Estatal) para no sumar las otras dos
+        "desde_ancla": "II.- Capítulo 4000 Transferencias, Asignaciones, Subsidios y Otras Ayudas:",
+        "hasta_ancla": "III.- Participaciones y Aportaciones:",
+        "ancla_header": "MONTO",
+        "instituciones": ["Universidad Autónoma de Baja California Sur"],
+        "corregir_unidad": lambda v: v,  # ya viene en pesos completos
     },
 }
 
@@ -231,7 +296,19 @@ def cargar_aportacion_estatal(entidad: str, year: int) -> float | None:
     - "carpeta_por_año": un archivo distinto por año dentro de
       config["carpeta"]/{año}/, localizado por config["glob_por_año"] porque
       el nombre exacto del archivo cambia de un año a otro (xlsx en Chihuahua,
-      csv con encoding variable — config["encoding"] — en Sinaloa)."""
+      csv con encoding variable — config["encoding"] — en Sinaloa).
+
+    config["col_institucion"] (default 0, columna A) indica en qué columna de
+    cada fila está el nombre de la institución -- en Baja California va en la
+    columna B (índice 1), no A como en el resto de las entidades.
+
+    config["desde_ancla"]/config["hasta_ancla"] (opcionales, solo
+    "carpeta_por_año") acotan la búsqueda a las filas entre esas dos anclas
+    (ambas deben ser el valor EXACTO de una celda) -- necesario cuando la
+    misma institución aparece más de una vez en el archivo en secciones
+    distintas (ej. Baja California Sur: la UABCS aparece con su aportación
+    ESTATAL, con su aportación FEDERAL vía Ramo 33, y con el total combinado
+    de ambas -- sin acotar, se sumarían las tres)."""
     config = APORTACION_ESTATAL_CONFIG.get(entidad)
     if config is None:
         return None
@@ -263,6 +340,18 @@ def cargar_aportacion_estatal(entidad: str, year: int) -> float | None:
             filas = pl.read_csv(ruta, encoding=config.get("encoding", "utf8"), has_header=False).rows()
         else:
             filas = pl.read_excel(ruta, sheet_id=1, has_header=False).rows()
+        if "desde_ancla" in config:
+            try:
+                i0 = next(i for i, f in enumerate(filas) if config["desde_ancla"] in f)
+            except StopIteration:
+                return None
+            i1 = len(filas)
+            if "hasta_ancla" in config:
+                try:
+                    i1 = next(i for i, f in enumerate(filas) if i > i0 and config["hasta_ancla"] in f)
+                except StopIteration:
+                    pass
+            filas = filas[i0:i1]
         try:
             header = next(f for f in filas if config["ancla_header"] in f)
         except StopIteration:
@@ -271,10 +360,11 @@ def cargar_aportacion_estatal(entidad: str, year: int) -> float | None:
     else:
         raise ValueError(f"modo desconocido en APORTACION_ESTATAL_CONFIG[{entidad!r}]: {modo!r}")
 
+    col_institucion = config.get("col_institucion", 0)
     total = 0.0
     encontrado = False
     for fila in filas:
-        if not isinstance(fila[0], str) or _normalizar_institucion(fila[0]) not in instituciones_norm:
+        if not isinstance(fila[col_institucion], str) or _normalizar_institucion(fila[col_institucion]) not in instituciones_norm:
             continue
         valor = _parsear_monto(fila[col_idx])
         if valor is None:
@@ -282,6 +372,81 @@ def cargar_aportacion_estatal(entidad: str, year: int) -> float | None:
         total += config["corregir_unidad"](valor)
         encontrado = True
     return total if encontrado else None
+
+
+def años_disponibles_aportacion_estatal(entidad: str) -> list[int]:
+    """Años con dato REAL (no proyectado) de aportación estatal disponibles
+    para esta entidad en su fuente, según config["modo"]. Lista vacía si la
+    entidad no está mapeada o su fuente no existe."""
+    config = APORTACION_ESTATAL_CONFIG.get(entidad)
+    if config is None:
+        return []
+    modo = config.get("modo", "columnas_por_año")
+
+    if modo == "columnas_por_año":
+        ruta = config["ruta"]
+        if not ruta.exists():
+            return []
+        filas = pl.read_excel(ruta, sheet_name=config["hoja"], has_header=False).rows()
+        try:
+            header = next(f for f in filas if f[0] == config["ancla_header"])
+        except StopIteration:
+            return []
+        return sorted({int(float(a)) for a in header[1:] if a is not None})
+    elif modo == "carpeta_por_año":
+        if not config["carpeta"].exists():
+            return []
+        return sorted(
+            int(sub.name)
+            for sub in config["carpeta"].iterdir()
+            if sub.is_dir() and sub.name.isdigit() and any(sub.glob(config["glob_por_año"]))
+        )
+    else:
+        raise ValueError(f"modo desconocido en APORTACION_ESTATAL_CONFIG[{entidad!r}]: {modo!r}")
+
+
+def _matricula_entidad_estatales(entidad: str, year: int, niveles: set[str]) -> int | None:
+    """Matrícula del subsistema UNIVERSIDADES PÚBLICAS ESTATALES para una
+    sola entidad y año, usando el ciclo ANUIES cuyo año esperado
+    (fin_de_ciclo + 1) coincida con `year` (mismo truco que correr_historico
+    para mapear year -> lag). None si el año es muy reciente para tener
+    ciclo, o si no hay matrícula para esa entidad/nivel."""
+    _, _, año_esperado_lag0 = encontrar_anuies(0)
+    lag = año_esperado_lag0 - year
+    if lag < 0:
+        return None
+    try:
+        anuies_path, _, _ = encontrar_anuies(lag)
+    except (FileNotFoundError, ValueError):
+        return None
+    anuies = pl.read_excel(anuies_path, sheet_name="Base de datos")
+    mat = anuies.filter(
+        (pl.col("SUBSISTEMA") == SUBSISTEMA_ESTATALES)
+        & (pl.col("NIVEL").is_in(niveles))
+        & (pl.col("ENTIDAD") == entidad)
+    )["Matrícula Total"].sum()
+    return mat if mat else None
+
+
+def proyectar_aportacion_estatal(entidad: str, year: int, niveles: set[str]) -> tuple[float | None, int | None]:
+    """Proyecta ESTATAL para `year` cuando esa entidad no tiene dato real ahí,
+    escalando el último año REAL disponible (siempre el último real, nunca un
+    año ya proyectado, para no encadenar error) por el cambio de matrícula
+    del subsistema estatal entre ese año base y `year`. Devuelve
+    (valor_proyectado, año_base), o (None, None) si no hay año real anterior
+    a `year` o falta cualquier insumo (aportación o matrícula base/actual)."""
+    años_reales_previos = [a for a in años_disponibles_aportacion_estatal(entidad) if a < year]
+    if not años_reales_previos:
+        return None, None
+    año_base = max(años_reales_previos)
+    aportacion_base = cargar_aportacion_estatal(entidad, año_base)
+    if aportacion_base is None:
+        return None, None
+    matricula_base = _matricula_entidad_estatales(entidad, año_base, niveles)
+    matricula_actual = _matricula_entidad_estatales(entidad, year, niveles)
+    if not matricula_base or not matricula_actual:
+        return None, None
+    return aportacion_base * matricula_actual / matricula_base, año_base
 
 
 def encontrar_pef(year: int) -> Path:
@@ -379,11 +544,17 @@ def calcular_tabla_año(year: int, lag: int, posdoc: bool) -> tuple[pl.DataFrame
     return tabla, pef_path, anuies_path, ciclo, año_esperado
 
 
-def calcular_tabla_entidades(year: int, lag: int, posdoc: bool) -> tuple[pl.DataFrame, Path, Path, str, int]:
+def calcular_tabla_entidades(year: int, lag: int, posdoc: bool, proyectar: bool = False) -> tuple[pl.DataFrame, Path, Path, str, int]:
     """Costo por alumno del subsidio DGESUI (universidades públicas estatales)
     desglosado por entidad federativa, para un solo nivel (licenciatura+TSU, o
     posgrado con posdoc=True). Devuelve (tabla, pef_path, anuies_path, ciclo,
-    año_esperado); tabla trae una fila TOTAL con las sumas nacionales."""
+    año_esperado); tabla trae una fila TOTAL con las sumas nacionales.
+
+    proyectar=True rellena ESTATAL/TOTAL con una proyección (ver
+    proyectar_aportacion_estatal) para las entidades cuyo `year` sea
+    posterior al último año con dato real -- marcadas con ES_PROYECTADO=True.
+    Con proyectar=False (default), esas entidades quedan en None ("s/d")
+    igual que antes de agregar este flag."""
     _, niveles, subfuncion = nivel_activo(posdoc)
     anuies_path, ciclo, año_esperado = encontrar_anuies(lag)
     pef_path = encontrar_pef(year)
@@ -425,6 +596,25 @@ def calcular_tabla_entidades(year: int, lag: int, posdoc: bool) -> tuple[pl.Data
     tabla = tabla.with_columns(
         pl.col("ENTIDAD").map_elements(lambda e: cargar_aportacion_estatal(e, year), return_dtype=pl.Float64).alias("ESTATAL")
     )
+
+    if proyectar:
+        proyecciones = {}
+        for ent in tabla.filter(pl.col("ESTATAL").is_null())["ENTIDAD"]:
+            if ent not in APORTACION_ESTATAL_CONFIG:
+                continue
+            valor, _año_base = proyectar_aportacion_estatal(ent, year, niveles)
+            if valor is not None:
+                proyecciones[ent] = valor
+        tabla = tabla.with_columns(
+            pl.col("ENTIDAD").map_elements(lambda e: e in proyecciones, return_dtype=pl.Boolean).alias("ES_PROYECTADO"),
+            pl.when(pl.col("ESTATAL").is_null())
+              .then(pl.col("ENTIDAD").map_elements(lambda e: proyecciones.get(e), return_dtype=pl.Float64))
+              .otherwise(pl.col("ESTATAL"))
+              .alias("ESTATAL"),
+        )
+    else:
+        tabla = tabla.with_columns(pl.lit(False).alias("ES_PROYECTADO"))
+
     tabla = tabla.with_columns(
         (pl.col("FEDERAL") / pl.col("MATRICULA")).alias("COSTO_ALUMNO_FEDERAL"),
         (pl.col("FEDERAL") + pl.col("ESTATAL")).alias("TOTAL"),
@@ -443,6 +633,7 @@ def calcular_tabla_entidades(year: int, lag: int, posdoc: bool) -> tuple[pl.Data
             "N_PLANTELES": [tabla["N_PLANTELES"].sum()],
             "FEDERAL": [tabla["FEDERAL"].sum()],
             "ESTATAL": [estatal_nacional],  # parcial: solo suma entidades con dato (ver aviso en main()); None si ninguna entidad tiene dato para este año
+            "ES_PROYECTADO": [False],  # es un agregado, no un valor proyectado en sí mismo
         }
     ).with_columns(
         (pl.col("FEDERAL") / pl.col("MATRICULA")).alias("COSTO_ALUMNO_FEDERAL"),
@@ -550,6 +741,7 @@ def main():
     parser.add_argument("--states", action="store_true", help="Muestra el costo por alumno por entidad federativa (subsidio DGESUI vía universidades públicas estatales) en vez de la tabla UNAM/IPN/UAM/Estatales. No compatible con --historico.")
     parser.add_argument("--posdoc", action="store_true", help="Usa posgrado (maestría+doctorado+especialidad, DESC_SUBFUNCION=Posgrado) en vez de licenciatura+TSU (default) en todos los cálculos.")
     parser.add_argument("--save", action="store_true", help="Guardar el resultado como parquet en dashboard_data/ (por default no se guarda, solo se imprime)")
+    parser.add_argument("--proyectar-estatal", dest="proyectar_estatal", action="store_true", help="Con --states: si --year es posterior al último año con dato real de aportación estatal de una entidad, proyecta el valor escalando el último año real por el cambio de matrícula (asume costo estatal por alumno constante). Por default no se proyecta -- se muestra 's/d'. Las celdas proyectadas se marcan con '*'.")
     args = parser.parse_args()
 
     if args.historico and args.states:
@@ -563,7 +755,7 @@ def main():
     year = args.year
 
     if args.states:
-        tabla, pef_path, anuies_path, ciclo, año_esperado = calcular_tabla_entidades(year, args.lag, args.posdoc)
+        tabla, pef_path, anuies_path, ciclo, año_esperado = calcular_tabla_entidades(year, args.lag, args.posdoc, proyectar=args.proyectar_estatal)
 
         print(f"Fuente presupuesto: {pef_path}")
         print(f"Fuente matrícula: {anuies_path} (ciclo {ciclo})")
@@ -573,17 +765,21 @@ def main():
         con_dato = sorted(APORTACION_ESTATAL_CONFIG.keys())
         print(f"[aviso] Aportación estatal (ESTATAL/TOTAL) solo disponible para: {con_dato} — el resto muestra 's/d'. La fila TOTAL nacional de ESTATAL/TOTAL es parcial (solo suma las entidades con dato).")
         print("[aviso] ESTATAL no distingue nivel (licenciatura/posgrado) — la fuente estatal reporta un solo monto por universidad, mientras FEDERAL sí está filtrado por --posdoc. TOTAL mezcla ambos criterios.")
+        if args.proyectar_estatal:
+            print("[aviso] --proyectar-estatal activo: las celdas marcadas con '*' son una PROYECCIÓN (no dato real), calculada escalando el último año real por el cambio de matrícula -- asume costo estatal por alumno constante desde entonces.")
         print()
 
-        def fmt(v):
-            return f"{v:>15,.0f}" if v is not None else f"{'s/d':>15}"
+        def fmt(v, proyectado=False):
+            if v is None:
+                return f"{'s/d':>15}"
+            return f"{f'{v:,.0f}' + ('*' if proyectado else ''):>15}"
 
         print(f"{'Entidad':<20} {'Insts':>6} {'Planteles':>10} {'Matrícula':>10} {'Federal':>15} {'Estatal':>15} {'Total':>15} {'Costo/al.Fed':>13} {'Costo/al.Total':>15}")
         for r in tabla.iter_rows(named=True):
             print(
                 f"{r['ENTIDAD']:<20} {r['N_INSTITUCIONES']:>6,} {r['N_PLANTELES']:>10,} {r['MATRICULA']:>10,} "
-                f"{r['FEDERAL']:>15,.0f} {fmt(r['ESTATAL'])} {fmt(r['TOTAL'])} {r['COSTO_ALUMNO_FEDERAL']:>13,.0f} "
-                f"{fmt(r['COSTO_ALUMNO_TOTAL'])}"
+                f"{r['FEDERAL']:>15,.0f} {fmt(r['ESTATAL'], r['ES_PROYECTADO'])} {fmt(r['TOTAL'], r['ES_PROYECTADO'])} {r['COSTO_ALUMNO_FEDERAL']:>13,.0f} "
+                f"{fmt(r['COSTO_ALUMNO_TOTAL'], r['ES_PROYECTADO'])}"
             )
 
         if args.save:
