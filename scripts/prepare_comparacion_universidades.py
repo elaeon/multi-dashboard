@@ -121,12 +121,21 @@ solo verificada para 2025, el archivo de 2024 tiene otra estructura y no
 incluye a la UABCS como dependencia propia; la UABCS aparece 3 veces en el
 archivo con montos distintos — estatal, federal Ramo 33, y total combinado —
 por lo que se usa config["desde_ancla"]/["hasta_ancla"] para acotar la
-búsqueda solo a la sección de financiamiento estatal). Para agregar otra entidad, basta
+búsqueda solo a la sección de financiamiento estatal), y para **COLIMA**
+(Universidad de Colima + Universidad Intercultural de Colima, columna
+"Asignación Presupuestal" de data/entidades_federativas/colima/{año}/PpsObjGtox*.xlsx
+— modo "carpeta_por_año"; a diferencia de las demás entidades la fuente es
+"Presupuesto por Objeto de Gasto" (por programa presupuestario, no por
+dependencia) y el nombre del programa va en la columna B, no la A
+(config["col_institucion"] = 1); el programa de Universidad de Colima se
+llama "Educación Media Superior y Superior de la Universidad de Colima" y
+mezcla el bachillerato con la educación superior en una sola cifra, ver
+caveat (4) abajo). Para agregar otra entidad, basta
 con añadir una entrada a APORTACION_ESTATAL_CONFIG con el modo que corresponda
 a cómo esa entidad publica su cuenta pública; las entidades ausentes del
 diccionario muestran "s/d" en ESTATAL/TOTAL, no truenan.
 
-Tres caveats de ESTATAL/TOTAL que no se pueden resolver con los datos
+Cuatro caveats de ESTATAL/TOTAL que no se pueden resolver con los datos
 disponibles: (1) puede ser una cifra PARCIAL dentro de la entidad — en Sonora
 solo "Universidad de Sonora" tiene línea propia, ni Instituto Tecnológico de
 Sonora, ni Universidad del Pueblo Yaqui (Intercultural), ni El Colegio de
@@ -140,20 +149,29 @@ años (filas jerárquicas en 2023/2025, columnas planas en otra hoja en 2024
 porque la hoja normal viene rota) que no encaja en el mecanismo genérico de
 APORTACION_ESTATAL_CONFIG sin un parser ad-hoc — queda pendiente de
 integrar, así que el ESTATAL de Baja California hoy solo cubre a UABC.
-(Sinaloa, Chihuahua y Baja California Sur sí cubren a todas sus instituciones
-DGESUI: Sinaloa incluye a Universidad Autónoma Indígena de México, Chihuahua
-incluye a El Colegio de Chihuahua -- su única institución de apoyo solidario,
-monto pequeño --, y Baja California Sur no tiene ninguna institución
-intercultural ni de apoyo solidario registrada en ANUIES). (2) ESTATAL no
-distingue nivel
+(Sinaloa, Chihuahua, Baja California Sur y Colima sí cubren a todas sus
+instituciones DGESUI: Sinaloa incluye a Universidad Autónoma Indígena de
+México, Chihuahua incluye a El Colegio de Chihuahua -- su única institución
+de apoyo solidario, monto pequeño --, Baja California Sur no tiene ninguna
+institución intercultural ni de apoyo solidario registrada en ANUIES, y
+Colima incluye a Universidad Intercultural de Colima -- aunque esta última sí
+tiene el problema descrito en (4)). (2) ESTATAL no distingue nivel
 (licenciatura vs. posgrado) — la fuente estatal reporta un solo monto por
 universidad, todos los niveles mezclados — mientras que FEDERAL sí está
 filtrado por nivel vía --posdoc. TOTAL, por lo tanto, siempre mezcla un
 FEDERAL de un solo nivel con un ESTATAL de todos los niveles. (3) Sonora y
-Chihuahua reportan DEVENGADO (gasto ejercido), pero Baja California solo
-publica presupuesto ASIGNADO/aprobado (no hay archivo de Cuenta Pública con
-devengado en su carpeta) — comparar el ESTATAL de Baja California contra el
-de Sonora/Chihuahua mezcla dos conceptos presupuestales distintos.
+Chihuahua reportan DEVENGADO (gasto ejercido), pero Baja California y Colima
+solo publican presupuesto ASIGNADO/aprobado (no hay archivo de Cuenta Pública
+con devengado en su carpeta) — comparar el ESTATAL de estas dos contra el de
+Sonora/Chihuahua mezcla dos conceptos presupuestales distintos. (4) El
+programa presupuestario "Educación Media Superior y Superior de la
+Universidad de Colima" mezcla el bachillerato (SEMS-equivalente) con la
+educación superior en una sola cifra -- mismo defecto ya conocido para la
+Universidad de Guadalajara (ver el inicio de este docstring), pero ahí solo
+afecta al FEDERAL/PEF; aquí afecta al ESTATAL de Colima directamente y no se
+puede separar desde esta fuente, así que el ESTATAL de Universidad de Colima
+queda inflado por el gasto de bachillerato (Universidad Intercultural de
+Colima no tiene este problema, su programa es educación superior puro).
 
 Con --proyectar-estatal, --states rellena con una PROYECCIÓN el ESTATAL/TOTAL
 de cualquier entidad cuyo --year pedido sea posterior al último año con dato
@@ -287,6 +305,28 @@ APORTACION_ESTATAL_CONFIG = {
         "hasta_ancla": "III.- Participaciones y Aportaciones:",
         "ancla_header": "MONTO",
         "instituciones": ["Universidad Autónoma de Baja California Sur"],
+        "corregir_unidad": lambda v: v,  # ya viene en pesos completos
+    },
+    "COLIMA": {
+        "modo": "carpeta_por_año",  # un archivo distinto por año, adentro de ENTIDADES_DIR/colima/{año}/
+        "carpeta": ENTIDADES_DIR / "colima",
+        # "PpsObjGtox.xlsx" en 2024, "PpsObjGtox_25.xlsx" en 2025
+        "glob_por_año": "PpsObjGtox*.xlsx",
+        "ancla_header": "Asignación Presupuestal",
+        # la fuente es "Presupuesto por Objeto de Gasto" (por programa
+        # presupuestario, no por dependencia): el nombre del programa va en la
+        # columna B (índice 1), la columna A trae solo la Clave numérica
+        "col_institucion": 1,
+        "instituciones": [
+            "Universidad Intercultural de Colima.",
+            # OJO: este programa mezcla Educación Media Superior (bachillerato)
+            # con la Educación Superior de la Universidad de Colima en una sola
+            # cifra -- mismo defecto ya documentado para el SEMS de la
+            # Universidad de Guadalajara en el docstring del módulo; no se
+            # puede separar desde esta fuente, así que el ESTATAL de Colima
+            # para UCOL queda inflado por el bachillerato.
+            "Educación Media Superior y Superior de la Universidad de  Colima. ",
+        ],
         "corregir_unidad": lambda v: v,  # ya viene en pesos completos
     },
 }
