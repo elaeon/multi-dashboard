@@ -1,7 +1,8 @@
 """
 Comparación de presupuesto federal (PEF) por alumno entre UNAM, IPN, UAM y las
-universidades públicas estatales (subsidio vía DGESUI), usando matrícula real
-de ANUIES como denominador.
+universidades del subsidio DGESUI (públicas estatales + interculturales + de
+apoyo solidario, ver UNIVERSIDADES_DGESUI_2025), usando matrícula real de
+ANUIES como denominador.
 
 Motivo: UNAM e IPN administran, dentro de la misma Unidad Responsable, tanto su
 nivel superior/posgrado como su bachillerato (CCH/prepas en UNAM, CECyT en IPN)
@@ -64,14 +65,24 @@ estatales por año. Respeta --posdoc igual que el camino de un solo año.
 Run: uv run python scripts/prepare_comparacion_universidades.py --historico 2019-2026 --save
 
 Con --states, en vez de la tabla UNAM/IPN/UAM/Estatales, muestra el costo por
-alumno del subsidio DGESUI desglosado por entidad federativa (las 35
-instituciones del subsistema ANUIES "UNIVERSIDADES PÚBLICAS ESTATALES"), usando
-la columna DESC_ENTIDAD_FEDERATIVA del PEF para geolocalizar el gasto. También
-respeta --posdoc (columnas de licenciatura o de posgrado, nunca ambas a la vez).
-No es compatible con --historico. Caveat: en las 4 entidades con 2 instituciones
-de este subsistema (Campeche, Chihuahua, Sinaloa, Sonora) el PEF no desglosa el
-gasto por institución dentro del estado — el costo/alumno mostrado es el
-promedio combinado de ambas, no el de cada una por separado.
+alumno del subsidio DGESUI desglosado por entidad federativa, usando la
+columna DESC_ENTIDAD_FEDERATIVA del PEF para geolocalizar el gasto. La
+matrícula (denominador) suma los tres subsistemas ANUIES "UNIVERSIDADES
+PÚBLICAS ESTATALES", "UNIVERSIDADES INTERCULTURALES" y "UNIVERSIDADES
+PÚBLICAS ESTATALES DE APOYO SOLIDARIO" (SUBSISTEMAS_DGESUI) porque el PEF no
+desglosa el subsidio DGESUI por institución dentro de una entidad — la misma
+cifra financia a las tres por igual, así que contarlas por separado inflaría
+artificialmente el costo/alumno de las entidades con universidad intercultural
+o de apoyo solidario. Cada institución se verifica además contra
+UNIVERSIDADES_DGESUI_2025 (lista oficial de las 78 universidades del programa
+"Subsidio Ordinario" DGESUI 2025) antes de entrar al cálculo; las que no
+matchean se excluyen y se listan en un aviso (ver no_verificadas). También
+respeta --posdoc (columnas de licenciatura o de posgrado, nunca ambas a la
+vez). No es compatible con --historico. Caveat: en las entidades con más de
+una institución bajo SUBSISTEMAS_DGESUI (ver columnas
+N_INSTITUCIONES/N_PLANTELES impresas en la tabla) el PEF no desglosa el gasto
+por institución dentro del estado — el costo/alumno mostrado es el promedio
+combinado de todas ellas, no el de cada una por separado.
 
 --states también agrega, cuando está disponible, la APORTACIÓN ESTATAL (el
 presupuesto propio del gobierno de la entidad hacia sus universidades
@@ -84,12 +95,14 @@ data/entidades_federativas/sonora/egresos.xlsx, un solo archivo con años
 unidades detectado y corregido: la hoja declara "miles de pesos" para toda la
 tabla pero 2021-2023 ya vienen en pesos completos, se distingue por magnitud,
 valor > 1e8 ⇒ ya está en pesos), para **CHIHUAHUA** (Universidad Autónoma de
-Chihuahua + Universidad Autónoma de Cd. Juárez, columna DEVENGADO de
+Chihuahua + Universidad Autónoma de Cd. Juárez + El Colegio de Chihuahua
+(apoyo solidario, monto pequeño), columna DEVENGADO de
 data/entidades_federativas/chihuahua/{año}/18*.xlsx — un archivo por año, con
 nombre de archivo distinto cada año, localizado por glob; modo
 "carpeta_por_año"; 2023 no lleva acentos en los nombres de institución, se
 corrige emparejando sin acentos), y para **SINALOA** (Universidad Autónoma de
-Sinaloa + Universidad Autónoma de Occidente, columna "Monto" de
+Sinaloa + Universidad Autónoma de Occidente + Universidad Autónoma Indígena
+de México (Intercultural), columna "Monto" de
 data/entidades_federativas/sinaloa/{año}/*nexo 10.csv — mismo modo
 "carpeta_por_año", pero en CSV con encoding iso-8859-1 en vez de xlsx; 2023
 trae el nombre de archivo en minúscula ("anexo 10.csv") vs. 2024-2025 en
@@ -115,11 +128,24 @@ diccionario muestran "s/d" en ESTATAL/TOTAL, no truenan.
 
 Tres caveats de ESTATAL/TOTAL que no se pueden resolver con los datos
 disponibles: (1) puede ser una cifra PARCIAL dentro de la entidad — en Sonora
-solo "Universidad de Sonora" tiene línea propia, Instituto Tecnológico de
-Sonora (la otra institución del subsistema en esa entidad) no aparece en el
-archivo estatal, así que el ESTATAL de Sonora no cubre a ITSON (Chihuahua,
-Sinaloa, Baja California y Baja California Sur sí cubren a todas sus
-instituciones del subsistema). (2) ESTATAL no distingue nivel
+solo "Universidad de Sonora" tiene línea propia, ni Instituto Tecnológico de
+Sonora, ni Universidad del Pueblo Yaqui (Intercultural), ni El Colegio de
+Sonora/Universidad de la Sierra/Universidad Estatal de Sonora (apoyo
+solidario) -- las otras cinco instituciones DGESUI de esa entidad -- aparecen
+en el archivo estatal, así que el ESTATAL de Sonora no las cubre. En Baja
+California, Universidad Intercultural de Baja California sí tiene línea
+propia en un archivo local distinto ("Presupuesto <año>-Baja
+California-Datos abiertos.xlsx") pero con estructura inconsistente entre
+años (filas jerárquicas en 2023/2025, columnas planas en otra hoja en 2024
+porque la hoja normal viene rota) que no encaja en el mecanismo genérico de
+APORTACION_ESTATAL_CONFIG sin un parser ad-hoc — queda pendiente de
+integrar, así que el ESTATAL de Baja California hoy solo cubre a UABC.
+(Sinaloa, Chihuahua y Baja California Sur sí cubren a todas sus instituciones
+DGESUI: Sinaloa incluye a Universidad Autónoma Indígena de México, Chihuahua
+incluye a El Colegio de Chihuahua -- su única institución de apoyo solidario,
+monto pequeño --, y Baja California Sur no tiene ninguna institución
+intercultural ni de apoyo solidario registrada en ANUIES). (2) ESTATAL no
+distingue nivel
 (licenciatura vs. posgrado) — la fuente estatal reporta un solo monto por
 universidad, todos los niveles mezclados — mientras que FEDERAL sí está
 filtrado por nivel vía --posdoc. TOTAL, por lo tanto, siempre mezcla un
@@ -185,7 +211,11 @@ APORTACION_ESTATAL_CONFIG = {
         # 2023 no lleva acentos en los nombres de institución (defecto de la
         # fuente); se corrige emparejando sin acentos, no hace falta listar
         # ambas variantes.
-        "instituciones": ["UNIVERSIDAD AUTÓNOMA DE CHIHUAHUA", "UNIVERSIDAD AUTÓNOMA DE CD. JUÁREZ"],
+        "instituciones": [
+            "UNIVERSIDAD AUTÓNOMA DE CHIHUAHUA",
+            "UNIVERSIDAD AUTÓNOMA DE CD. JUÁREZ",
+            "EL COLEGIO DE CHIHUAHUA",  # apoyo solidario, monto pequeño frente a las otras dos
+        ],
         "corregir_unidad": lambda v: v,  # ya viene en pesos completos
     },
     "SINALOA": {
@@ -194,7 +224,11 @@ APORTACION_ESTATAL_CONFIG = {
         # "Anexo 10.csv" en 2024-2025, "anexo 10.csv" (minúscula) en 2023
         "glob_por_año": "*nexo 10.csv",
         "ancla_header": "Monto",
-        "instituciones": ["Universidad Autónoma de Sinaloa", "Universidad Autónoma de Occidente"],
+        "instituciones": [
+            "Universidad Autónoma de Sinaloa",
+            "Universidad Autónoma de Occidente",
+            "Universidad Autónoma Indígena de México",
+        ],
         "corregir_unidad": lambda v: v,  # ya viene en pesos completos
         "encoding": "iso-8859-1",  # CSV del portal de Sinaloa no viene en UTF-8
     },
@@ -230,6 +264,100 @@ APORTACION_ESTATAL_CONFIG = {
     },
 }
 
+# Nombre completo + entidad de las 78 universidades del programa "Subsidio
+# Ordinario" DGESUI 2025 (https://dgesui.ses.sep.gob.mx/sep.subsidioentransparencia.mx/2025/subsidio-ordinario,
+# ficha de cada universidad -- dirección física + gobernador/a en turno usados
+# para resolver la entidad). Es una lista MÁS AMPLIA que SUBSISTEMA_ESTATALES
+# de ANUIES: incluye Universidades Interculturales, "El Colegio de X", etc.,
+# no solo las 35 "Universidades Públicas Estatales" que usa el resto del
+# script (ej. Sonora tiene aquí 6 instituciones -- Colson, ITSON, UES,
+# UNISIERRA, UNISON, UPY -- pero solo 2 caen en SUBSISTEMA_ESTATALES). Se usa
+# como lista de verificación: solo la matrícula de instituciones que aparecen
+# aquí (por nombre, ver _es_universidad_dgesui) entra al cálculo de
+# MATRICULA -- así una institución que ANUIES reclasifique bajo
+# SUBSISTEMA_ESTATALES/SUBSISTEMA_INTERCULTURALES pero que no esté confirmada
+# como receptora del subsidio DGESUI no se cuela silenciosamente.
+UNIVERSIDADES_DGESUI_2025 = {
+    "BUAP": ("Benemérita Universidad Autónoma de Puebla", "Puebla"),
+    "COLECH": ("El Colegio de Chihuahua", "Chihuahua"),
+    "COLMOR": ("El Colegio de Morelos", "Morelos"),
+    "Colson": ("El Colegio de Sonora", "Sonora"),
+    "IC": ("Instituto Campechano", "Campeche"),
+    "ITSON": ("Instituto Tecnológico de Sonora", "Sonora"),
+    "UAA": ("Universidad Autónoma de Aguascalientes", "Aguascalientes"),
+    "UABC": ("Universidad Autónoma de Baja California", "Baja California"),
+    "UABCS": ("Universidad Autónoma de Baja California Sur", "Baja California Sur"),
+    "UABJO": ("Universidad Autónoma Benito Juárez de Oaxaca", "Oaxaca"),
+    "UACAM": ("Universidad Autónoma de Campeche", "Campeche"),
+    "UACH": ("Universidad Autónoma de Chihuahua", "Chihuahua"),
+    "UACJ": ("Universidad Autónoma de Ciudad Juárez", "Chihuahua"),
+    "UACO": ("Universidad Autónoma Comunal de Oaxaca", "Oaxaca"),
+    "UAdeC": ("Universidad Autónoma de Coahuila", "Coahuila"),
+    "UAdeO": ("Universidad Autónoma de Occidente", "Sinaloa"),
+    "UADY": ("Universidad Autónoma de Yucatán", "Yucatán"),
+    "UAEH": ("Universidad Autónoma del Estado de Hidalgo", "Hidalgo"),
+    "UAEMéx": ("Universidad Autónoma del Estado de México", "México"),
+    "UAEM": ("Universidad Autónoma del Estado de Morelos", "Morelos"),
+    "UAEQROO": ("Universidad Autónoma del Estado de Quintana Roo", "Quintana Roo"),
+    "UAGro": ("Universidad Autónoma de Guerrero", "Guerrero"),
+    "UAIM": ("Universidad Autónoma Indígena de México", "Sinaloa"),
+    "UAN": ("Universidad Autónoma de Nayarit", "Nayarit"),
+    "UANL": ("Universidad Autónoma de Nuevo León", "Nuevo León"),
+    "UAQ": ("Universidad Autónoma de Querétaro", "Querétaro"),
+    "UAS": ("Universidad Autónoma de Sinaloa", "Sinaloa"),
+    "UASLP": ("Universidad Autónoma de San Luis Potosí", "San Luis Potosí"),
+    "UAT": ("Universidad Autónoma de Tamaulipas", "Tamaulipas"),
+    "UATx": ("Universidad Autónoma de Tlaxcala", "Tlaxcala"),
+    "UAZ": ('Universidad Autónoma De Zacatecas "Francisco García Salinas"', "Zacatecas"),
+    "UCEMICH": ("Universidad de la Ciénega del Estado de Michoacán de Ocampo", "Michoacán"),
+    "UCOL": ("Universidad de Colima", "Colima"),
+    "UdeG": ("Universidad de Guadalajara", "Jalisco"),
+    "UES": ("Universidad Estatal de Sonora", "Sonora"),
+    "UG": ("Universidad de Guanajuato", "Guanajuato"),
+    "UIBC": ("Universidad Intercultural de Baja California", "Baja California"),
+    "UIC": ("Universidad Intercultural de Colima", "Colima"),
+    "UICAM": ("Universidad Intercultural de Campeche", "Campeche"),
+    "UICEH": ("Universidad Intercultural del Estado de Hidalgo", "Hidalgo"),
+    "UICH": ("Universidad Interserrana del Estado de Puebla-Chilchotla", "Puebla"),
+    "UICSLP": ("Universidad Intercultural de San Luis Potosí", "San Luis Potosí"),
+    "UIEG": ("Universidad Intercultural del Estado de Guerrero", "Guerrero"),
+    "UIEM": ("Universidad Intercultural del Estado de México", "México"),
+    "UIEP": ("Universidad Intercultural del Estado de Puebla", "Puebla"),
+    "UIEPA": ("Universidad Interserrana del Estado de Puebla-Ahuacatlán", "Puebla"),
+    "UIET": ("Universidad Intercultural del Estado de Tabasco", "Tabasco"),
+    "UIG": ("Universidad Intercultural del Estado de Guanajuato", "Guanajuato"),
+    "UIIM": ("Universidad Intercultural Indígena de Michoacán", "Michoacán"),
+    "UIJ": ("Universidad Intercultural de Jalisco", "Jalisco"),
+    "UIMQROO": ("Universidad Intercultural Maya de Quintana Roo", "Quintana Roo"),
+    "UIP": ("Universidad Intercultural del Pueblo", "Oaxaca"),
+    "UIT": ("Universidad Intercultural de Tlaxcala", "Tlaxcala"),
+    "UJAT": ("Universidad Juárez Autónoma de Tabasco", "Tabasco"),
+    "UJED": ("Universidad Juárez del Estado de Durango", "Durango"),
+    "UMAR": ("Universidad del Mar", "Oaxaca"),
+    "UMB": ("Universidad Mexiquense del Bicentenario", "México"),
+    "UMSNH": ("Universidad Michoacana de San Nicolás de Hidalgo", "Michoacán"),
+    "UNACAR": ("Universidad Autónoma del Carmen", "Campeche"),
+    "UNACH": ("Universidad Autónoma de Chiapas", "Chiapas"),
+    "UNCA": ("Universidad de la Cañada", "Oaxaca"),
+    "UNEVE": ("Universidad Estatal del Valle de Ecatepec", "México"),
+    "UNEVT": ("Universidad Estatal del Valle de Toluca", "México"),
+    "UNICACH": ("Universidad Autónoma de Ciencias y Artes de Chiapas", "Chiapas"),
+    "UNICARIBE": ("Universidad del Caribe", "Quintana Roo"),
+    "UNICH": ("Universidad Intercultural de Chiapas", "Chiapas"),
+    "UNISIERRA": ("Universidad de la Sierra", "Sonora"),
+    "UNISON": ("Universidad de Sonora", "Sonora"),
+    "UNISTMO": ("Universidad del Istmo", "Oaxaca"),
+    "UNITI": ("Universidad Intercultural para la Igualdad", "Aguascalientes"),
+    "UNO": ("Universidad de Oriente", "Yucatán"),
+    "UNPA": ("Universidad del Papaloapan", "Oaxaca"),
+    "UNSIJ": ("Universidad de la Sierra Juárez", "Oaxaca"),
+    "UNSIS": ("Universidad de la Sierra Sur", "Oaxaca"),
+    "UPCH": ("Universidad Popular de la Chontalpa", "Tabasco"),
+    "UPY": ("Universidad del Pueblo Yaqui", "Sonora"),
+    "UTM": ("Universidad Tecnológica de la Mixteca", "Oaxaca"),
+    "UV": ("Universidad Veracruzana", "Veracruz"),
+}
+
 sys.path.insert(0, str(Path(__file__).resolve().parent / "datatable"))
 
 INSTITUCIONES_FEDERALES = {
@@ -246,6 +374,15 @@ UR_ESTATALES = {
 }
 PP_ESTATALES = "Subsidios para organismos descentralizados estatales"
 SUBSISTEMA_ESTATALES = "UNIVERSIDADES PÚBLICAS ESTATALES"
+SUBSISTEMA_INTERCULTURALES = "UNIVERSIDADES INTERCULTURALES"
+SUBSISTEMA_APOYO_SOLIDARIO = "UNIVERSIDADES PÚBLICAS ESTATALES DE APOYO SOLIDARIO"
+# El PEF no desglosa el gasto por institución dentro de la UR DGESUI: la
+# misma cifra financia a las universidades públicas estatales, interculturales,
+# y "de apoyo solidario" de cada entidad por igual (las 78 de
+# UNIVERSIDADES_DGESUI_2025 se reparten entre estos tres subsistemas ANUIES).
+# La matrícula usada como denominador debe sumar los tres para medir el mismo
+# universo que el numerador.
+SUBSISTEMAS_DGESUI = {SUBSISTEMA_ESTATALES, SUBSISTEMA_INTERCULTURALES, SUBSISTEMA_APOYO_SOLIDARIO}
 
 NIVELES_LIC = {"LICENCIATURA UNIVERSITARIA Y TECNOLÓGICA", "LICENCIATURA EN EDUCACIÓN NORMAL", "TÉCNICO SUPERIOR"}
 NIVELES_POS = {"MAESTRÍA", "DOCTORADO", "ESPECIALIDAD"}
@@ -266,6 +403,30 @@ def _normalizar_institucion(s: str) -> str:
     2023 sin acentos vs. 2024-2025 con acentos)."""
     s = s.strip().upper()
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+
+
+# Casos donde ANUIES usa un nombre distinto (más corto, o con espaciado de
+# guion diferente) que el oficial DGESUI para la misma institución (misma
+# entidad, sin ambigüedad) -- se mapean a mano en vez de intentar un
+# emparejamiento difuso genérico.
+_ALIAS_ANUIES_DGESUI = {
+    "UNIVERSIDAD INTERCULTURAL DE GUANAJUATO",  # = DGESUI UIG, sin "del Estado de"
+    "UNIVERSIDAD AUTONOMA DE ZACATECAS",  # = DGESUI UAZ, sin el honorífico "Francisco García Salinas"
+    "UNIVERSIDAD DE CIENCIAS Y ARTES DE CHIAPAS",  # = DGESUI UNICACH, sin "Autónoma"
+    "UNIVERSIDAD INTERSERRANA DEL ESTADO DE PUEBLA - AHUACATLAN",  # = DGESUI UIEPA, espacios alrededor del guion
+    "UNIVERSIDAD INTERSERRANA DEL ESTADO DE PUEBLA - CHILCHOTLA",  # = DGESUI UICH, espacios alrededor del guion
+}
+_NOMBRES_DGESUI_NORM = {_normalizar_institucion(nombre) for nombre, _ in UNIVERSIDADES_DGESUI_2025.values()} | _ALIAS_ANUIES_DGESUI
+
+
+def _es_universidad_dgesui(institucion: str) -> bool:
+    """True si `institucion` (tal como aparece en INSTITUCIÓN de ANUIES)
+    corresponde a alguna de las 78 universidades verificadas en
+    UNIVERSIDADES_DGESUI_2025 -- para no incluir en MATRICULA ninguna
+    institución que ANUIES clasifique bajo SUBSISTEMA_ESTATALES o
+    SUBSISTEMA_INTERCULTURALES pero que no esté confirmada como receptora del
+    subsidio DGESUI Subsidio Ordinario."""
+    return _normalizar_institucion(institucion) in _NOMBRES_DGESUI_NORM
 
 
 def _parsear_monto(valor) -> float | None:
@@ -406,7 +567,8 @@ def años_disponibles_aportacion_estatal(entidad: str) -> list[int]:
 
 
 def _matricula_entidad_estatales(entidad: str, year: int, niveles: set[str]) -> int | None:
-    """Matrícula del subsistema UNIVERSIDADES PÚBLICAS ESTATALES para una
+    """Matrícula DGESUI (subsistemas estatales + interculturales, ver
+    SUBSISTEMAS_DGESUI, verificada contra UNIVERSIDADES_DGESUI_2025) para una
     sola entidad y año, usando el ciclo ANUIES cuyo año esperado
     (fin_de_ciclo + 1) coincida con `year` (mismo truco que correr_historico
     para mapear year -> lag). None si el año es muy reciente para tener
@@ -421,7 +583,8 @@ def _matricula_entidad_estatales(entidad: str, year: int, niveles: set[str]) -> 
         return None
     anuies = pl.read_excel(anuies_path, sheet_name="Base de datos")
     mat = anuies.filter(
-        (pl.col("SUBSISTEMA") == SUBSISTEMA_ESTATALES)
+        (pl.col("SUBSISTEMA").is_in(SUBSISTEMAS_DGESUI))
+        & (pl.col("INSTITUCIÓN").map_elements(_es_universidad_dgesui, return_dtype=pl.Boolean))
         & (pl.col("NIVEL").is_in(niveles))
         & (pl.col("ENTIDAD") == entidad)
     )["Matrícula Total"].sum()
@@ -490,7 +653,10 @@ def cargar_matricula(anuies_path: Path, posdoc: bool) -> dict[str, int]:
         sigla: anuies.filter(pl.col("INSTITUCIÓN") == nombre)["Matrícula Total"].sum()
         for sigla, nombre in INSTITUCIONES_FEDERALES_ANUIES.items()
     }
-    matricula["ESTATALES"] = anuies.filter(pl.col("SUBSISTEMA") == SUBSISTEMA_ESTATALES)["Matrícula Total"].sum()
+    matricula["ESTATALES"] = anuies.filter(
+        (pl.col("SUBSISTEMA").is_in(SUBSISTEMAS_DGESUI))
+        & (pl.col("INSTITUCIÓN").map_elements(_es_universidad_dgesui, return_dtype=pl.Boolean))
+    )["Matrícula Total"].sum()
     sin_matricula = [k for k, v in matricula.items() if not v]
     if sin_matricula:
         raise ValueError(f"Matrícula 0 en {nombre_nivel} para {sin_matricula} — revisar nombres de INSTITUCIÓN/SUBSISTEMA en {anuies_path}")
@@ -527,7 +693,7 @@ def calcular_tabla_año(year: int, lag: int, posdoc: bool) -> tuple[pl.DataFrame
         & (pl.col("DESC_PP") == PP_ESTATALES)
         & (pl.col("DESC_SUBFUNCION") == subfuncion)
     )
-    filas.append(("ESTATALES", "Universidades Públicas Estatales (35, vía DGESUI)", estatales_raw[col_monto].sum(), matricula["ESTATALES"]))
+    filas.append(("ESTATALES", "Universidades del subsidio DGESUI (estatales + interculturales + apoyo solidario)", estatales_raw[col_monto].sum(), matricula["ESTATALES"]))
 
     sin_presupuesto = [nombre for _, nombre, presupuesto, _ in filas if not presupuesto]
     if sin_presupuesto:
@@ -544,11 +710,18 @@ def calcular_tabla_año(year: int, lag: int, posdoc: bool) -> tuple[pl.DataFrame
     return tabla, pef_path, anuies_path, ciclo, año_esperado
 
 
-def calcular_tabla_entidades(year: int, lag: int, posdoc: bool, proyectar: bool = False) -> tuple[pl.DataFrame, Path, Path, str, int]:
-    """Costo por alumno del subsidio DGESUI (universidades públicas estatales)
-    desglosado por entidad federativa, para un solo nivel (licenciatura+TSU, o
-    posgrado con posdoc=True). Devuelve (tabla, pef_path, anuies_path, ciclo,
-    año_esperado); tabla trae una fila TOTAL con las sumas nacionales.
+def calcular_tabla_entidades(
+    year: int, lag: int, posdoc: bool, proyectar: bool = False
+) -> tuple[pl.DataFrame, Path, Path, str, int, list[str]]:
+    """Costo por alumno del subsidio DGESUI (universidades públicas estatales
+    + interculturales, ver SUBSISTEMAS_DGESUI, verificadas contra
+    UNIVERSIDADES_DGESUI_2025) desglosado por entidad federativa, para un
+    solo nivel (licenciatura+TSU, o posgrado con posdoc=True). Devuelve
+    (tabla, pef_path, anuies_path, ciclo, año_esperado, no_verificadas);
+    tabla trae una fila TOTAL con las sumas nacionales. no_verificadas es la
+    lista de instituciones que ANUIES clasifica bajo SUBSISTEMAS_DGESUI pero
+    que no matchean ninguna de las 78 en UNIVERSIDADES_DGESUI_2025 (excluidas
+    del cálculo; normalmente vacía -- ver aviso en main()).
 
     proyectar=True rellena ESTATAL/TOTAL con una proyección (ver
     proyectar_aportacion_estatal) para las entidades cuyo `year` sea
@@ -582,14 +755,20 @@ def calcular_tabla_entidades(year: int, lag: int, posdoc: bool, proyectar: bool 
         raise ValueError(f"Presupuesto 0 para --states en {pef_path.name} — revisar UR_ESTATALES/subfunción para este año.")
 
     anuies = pl.read_excel(anuies_path, sheet_name="Base de datos")
-    estatales = anuies.filter((pl.col("SUBSISTEMA") == SUBSISTEMA_ESTATALES) & (pl.col("NIVEL").is_in(niveles)))
+    dgesui_pool = anuies.filter((pl.col("SUBSISTEMA").is_in(SUBSISTEMAS_DGESUI)) & (pl.col("NIVEL").is_in(niveles)))
+    no_verificadas = sorted(
+        dgesui_pool.filter(~pl.col("INSTITUCIÓN").map_elements(_es_universidad_dgesui, return_dtype=pl.Boolean))["INSTITUCIÓN"]
+        .unique()
+        .to_list()
+    )
+    estatales = dgesui_pool.filter(pl.col("INSTITUCIÓN").map_elements(_es_universidad_dgesui, return_dtype=pl.Boolean))
     mat_ent = estatales.group_by("ENTIDAD").agg(
         pl.sum("Matrícula Total").alias("MATRICULA"),
         pl.col("INSTITUCIÓN").n_unique().alias("N_INSTITUCIONES"),
         pl.col("ESCUELA/CAMPUS/PLANTEL").n_unique().alias("N_PLANTELES"),
     )
     if mat_ent["MATRICULA"].sum() == 0:
-        raise ValueError(f"Matrícula 0 para --states en {anuies_path} — revisar SUBSISTEMA_ESTATALES/nivel para este ciclo.")
+        raise ValueError(f"Matrícula 0 para --states en {anuies_path} — revisar SUBSISTEMAS_DGESUI/nivel para este ciclo.")
 
     tabla = mat_ent.join(por_ent_pef.select("ENTIDAD", "PRESUPUESTO"), on="ENTIDAD", how="left").fill_null(0)
     tabla = tabla.rename({"PRESUPUESTO": "FEDERAL"})
@@ -643,7 +822,7 @@ def calcular_tabla_entidades(year: int, lag: int, posdoc: bool, proyectar: bool 
     total = total.select([pl.col(c).cast(tabla.schema[c]) for c in tabla.columns])
     tabla = pl.concat([tabla, total])
 
-    return tabla, pef_path, anuies_path, ciclo, año_esperado
+    return tabla, pef_path, anuies_path, ciclo, año_esperado, no_verificadas
 
 
 def parsear_rango(historico: str) -> tuple[int, int]:
@@ -755,13 +934,17 @@ def main():
     year = args.year
 
     if args.states:
-        tabla, pef_path, anuies_path, ciclo, año_esperado = calcular_tabla_entidades(year, args.lag, args.posdoc, proyectar=args.proyectar_estatal)
+        tabla, pef_path, anuies_path, ciclo, año_esperado, no_verificadas = calcular_tabla_entidades(
+            year, args.lag, args.posdoc, proyectar=args.proyectar_estatal
+        )
 
         print(f"Fuente presupuesto: {pef_path}")
         print(f"Fuente matrícula: {anuies_path} (ciclo {ciclo})")
         print(f"Nivel: {nombre_nivel}")
         if year != año_esperado:
             print(f"[aviso] --year {year} no coincide con el año esperado para el ciclo {ciclo} ({año_esperado}) — la comparación mezcla presupuesto y matrícula de años distintos.")
+        if no_verificadas:
+            print(f"[aviso] Excluidas de MATRICULA por no estar en UNIVERSIDADES_DGESUI_2025 (revisar si deben agregarse): {no_verificadas}")
         con_dato = sorted(APORTACION_ESTATAL_CONFIG.keys())
         print(f"[aviso] Aportación estatal (ESTATAL/TOTAL) solo disponible para: {con_dato} — el resto muestra 's/d'. La fila TOTAL nacional de ESTATAL/TOTAL es parcial (solo suma las entidades con dato).")
         print("[aviso] ESTATAL no distingue nivel (licenciatura/posgrado) — la fuente estatal reporta un solo monto por universidad, mientras FEDERAL sí está filtrado por --posdoc. TOTAL mezcla ambos criterios.")
