@@ -170,9 +170,35 @@ proyectado. Por default el flag está apagado y esos años muestran "s/d" como
 siempre; con el flag, las celdas proyectadas se marcan con "*" en la tabla de
 texto y con la columna `ES_PROYECTADO=True` en el parquet (--save).
 Run: uv run python scripts/prepare_comparacion_universidades.py --states --posdoc
+
+Con --dgesui, en vez de PEF+ANUIES, recrea la tabla por entidad usando
+EXCLUSIVAMENTE los datos que expone el propio portal DGESUI
+(data/dgesui/{year}/{SIGLA}_{year}.json, uno por universidad -- ver
+scripts/download_dgesui_montos.py para descargarlos). Agrupa por entidad vía
+UNIVERSIDADES_DGESUI_2025; las universidades sin archivo descargado para ese
+año se omiten con un aviso, no truenan. FEDERAL/ESTATAL/TOTAL salen
+directamente de "Monto Federal"/"Monto Estatal"/"Monto Público" de cada JSON,
+y MATRICULA de "Matrícula Educación Superior Total" (licenciatura+TSU -- el
+portal no desglosa por nivel, así que --posdoc se ignora en este modo).
+Comparación hecha para 2025 (ver conversación): FEDERAL de DGESUI sale
+sistemáticamente más alto que el de --states (nacional +13%, hasta +22% en
+algunas entidades) -- consistente con que PEF es presupuesto APROBADO y
+DGESUI reporta presupuesto EJERCIDO/ampliado. MATRICULA de DGESUI también más
+alta (nacional +5%) -- consistente con un autorreporte más reciente que el
+Anuario ANUIES publicado. La diferencia más importante es en ESTATAL: en
+Sinaloa y Chihuahua, --states da una cifra 2.7-3.1x más alta que --dgesui,
+porque el "Monto Estatal" de DGESUI es solo la contraparte FORMULAICA del
+convenio de coparticipación (ver "Porcentaje de Participación del Estado" en
+cada JSON, casi siempre una proporción fija tipo 2:1 o 1:1), mientras
+--states (vía APORTACION_ESTATAL_CONFIG) captura el presupuesto estatal
+COMPLETO de operación de la universidad desde su propia cuenta pública. En
+Baja California ambas cifras salen casi idénticas -- son métricas distintas,
+ninguna de las dos está "mal".
+Run: uv run python scripts/prepare_comparacion_universidades.py --dgesui --year 2025
 """
 
 import argparse
+import json
 import sys
 import unicodedata
 from pathlib import Path
@@ -183,6 +209,7 @@ PEF_DIR = Path("data/presupuesto_federacion/presupuesto/egresos_federacion")
 ANUIES_DIR = Path("data/anuies")
 ANUIES_GENERAL_DIR = ANUIES_DIR / "general"
 ENTIDADES_DIR = Path("data/entidades_federativas")
+DGESUI_DIR = Path("data/dgesui")
 OUT_DIR = Path("dashboard_data")
 
 # Configuración por entidad para leer su aportación estatal a universidades
@@ -825,6 +852,84 @@ def calcular_tabla_entidades(
     return tabla, pef_path, anuies_path, ciclo, año_esperado, no_verificadas
 
 
+def calcular_tabla_dgesui(year: int) -> tuple[pl.DataFrame, Path, list[str]]:
+    """Costo por alumno usando EXCLUSIVAMENTE los datos que expone el propio
+    portal DGESUI (data/dgesui/{year}/{SIGLA}_{year}.json, ver
+    scripts/download_dgesui_montos.py), agrupados por entidad vía
+    UNIVERSIDADES_DGESUI_2025 -- sin tocar PEF ni ANUIES. Devuelve (tabla,
+    directorio, faltantes); tabla trae una fila TOTAL con las sumas
+    nacionales; faltantes es la lista de siglas de UNIVERSIDADES_DGESUI_2025
+    sin archivo descargado para ese año (se omiten del cálculo, no truenan).
+
+    ESTATAL aquí es el "Monto Estatal" que reporta el propio DGESUI, que en
+    la práctica suele ser solo la contraparte FORMULAICA del convenio de
+    coparticipación (ver "Porcentaje de Participación del Estado" en cada
+    JSON) -- no el presupuesto estatal completo de la universidad, que sí
+    mide --states vía APORTACION_ESTATAL_CONFIG. Pueden diferir 2-3x en
+    entidades con universidades grandes (comparación hecha para 2025:
+    Sinaloa y Chihuahua salen ~2.7-3.1x más altas en --states que en
+    --dgesui; Baja California prácticamente idéntico). MATRICULA es
+    "Matrícula Educación Superior Total" (alcance licenciatura+TSU) -- el
+    portal no desglosa por nivel, así que --posdoc no aplica en este modo."""
+    directorio = DGESUI_DIR / str(year)
+    if not directorio.exists():
+        raise FileNotFoundError(
+            f"No se encontraron datos DGESUI para {year} en {directorio} -- corre primero: "
+            f"uv run python scripts/download_dgesui_montos.py --year {year} --output {directorio}"
+        )
+
+    filas = []
+    faltantes = []
+    for sigla, (_nombre, entidad) in UNIVERSIDADES_DGESUI_2025.items():
+        ruta = directorio / f"{sigla}_{year}.json"
+        if not ruta.exists():
+            faltantes.append(sigla)
+            continue
+        data = json.loads(ruta.read_text(encoding="utf-8"))
+        montos = data.get("Montos", {})
+        numeralia = data.get("Numeralia", {})
+        federal = _parsear_monto(montos.get("Monto Federal", {}).get("Número"))
+        estatal = _parsear_monto(montos.get("Monto Estatal", {}).get("Número"))
+        clave_matricula = next((k for k in numeralia if k.startswith("Matrícula Educación Superior Total")), None)
+        matricula = _parsear_monto(numeralia.get(clave_matricula)) if clave_matricula else None
+        filas.append((sigla, entidad.upper(), federal, estatal, int(matricula) if matricula is not None else None))
+
+    if not filas:
+        raise ValueError(f"Ningún archivo DGESUI encontrado en {directorio} -- revisa que el año {year} se haya descargado.")
+
+    df = pl.DataFrame(filas, schema=["SIGLA", "ENTIDAD", "FEDERAL", "ESTATAL", "MATRICULA"], orient="row")
+    tabla = df.group_by("ENTIDAD").agg(
+        pl.sum("FEDERAL").alias("FEDERAL"),
+        pl.sum("ESTATAL").alias("ESTATAL"),
+        pl.sum("MATRICULA").alias("MATRICULA"),
+        pl.len().alias("N_INSTITUCIONES"),
+    )
+    tabla = tabla.with_columns(
+        (pl.col("FEDERAL") + pl.col("ESTATAL")).alias("TOTAL"),
+        (pl.col("FEDERAL") / pl.col("MATRICULA")).alias("COSTO_ALUMNO_FEDERAL"),
+    )
+    tabla = tabla.with_columns((pl.col("TOTAL") / pl.col("MATRICULA")).alias("COSTO_ALUMNO_TOTAL"))
+    tabla = tabla.sort("COSTO_ALUMNO_FEDERAL", descending=True)
+
+    total = pl.DataFrame(
+        {
+            "ENTIDAD": ["TOTAL"],
+            "MATRICULA": [tabla["MATRICULA"].sum()],
+            "N_INSTITUCIONES": [tabla["N_INSTITUCIONES"].sum()],
+            "FEDERAL": [tabla["FEDERAL"].sum()],
+            "ESTATAL": [tabla["ESTATAL"].sum()],
+        }
+    ).with_columns(
+        (pl.col("FEDERAL") + pl.col("ESTATAL")).alias("TOTAL"),
+        (pl.col("FEDERAL") / pl.col("MATRICULA")).alias("COSTO_ALUMNO_FEDERAL"),
+    )
+    total = total.with_columns((pl.col("TOTAL") / pl.col("MATRICULA")).alias("COSTO_ALUMNO_TOTAL"))
+    total = total.select([pl.col(c).cast(tabla.schema[c]) for c in tabla.columns])
+    tabla = pl.concat([tabla, total])
+
+    return tabla, directorio, faltantes
+
+
 def parsear_rango(historico: str) -> tuple[int, int]:
     try:
         inicio, fin = historico.split("-")
@@ -921,10 +1026,13 @@ def main():
     parser.add_argument("--posdoc", action="store_true", help="Usa posgrado (maestría+doctorado+especialidad, DESC_SUBFUNCION=Posgrado) en vez de licenciatura+TSU (default) en todos los cálculos.")
     parser.add_argument("--save", action="store_true", help="Guardar el resultado como parquet en dashboard_data/ (por default no se guarda, solo se imprime)")
     parser.add_argument("--proyectar-estatal", dest="proyectar_estatal", action="store_true", help="Con --states: si --year es posterior al último año con dato real de aportación estatal de una entidad, proyecta el valor escalando el último año real por el cambio de matrícula (asume costo estatal por alumno constante). Por default no se proyecta -- se muestra 's/d'. Las celdas proyectadas se marcan con '*'.")
+    parser.add_argument("--dgesui", action="store_true", help="Recrea la tabla por entidad usando EXCLUSIVAMENTE datos del portal DGESUI (data/dgesui/{year}/, ver scripts/download_dgesui_montos.py) en vez de PEF+ANUIES. FEDERAL/ESTATAL miden algo distinto a --states -- ver docstring de calcular_tabla_dgesui. No compatible con --historico ni --states; ignora --posdoc (el portal no desglosa matrícula por nivel).")
     args = parser.parse_args()
 
     if args.historico and args.states:
         parser.error("--historico y --states no se pueden combinar")
+    if args.dgesui and (args.historico or args.states):
+        parser.error("--dgesui no se puede combinar con --historico ni --states")
 
     if args.historico:
         correr_historico(args.historico, args.save, args.posdoc)
@@ -932,6 +1040,34 @@ def main():
 
     nombre_nivel, _, _ = nivel_activo(args.posdoc)
     year = args.year
+
+    if args.dgesui:
+        if args.posdoc:
+            print("[aviso] --posdoc se ignora en --dgesui: el portal no desglosa matrícula por nivel (Numeralia solo trae 'Matrícula Educación Superior Total', alcance licenciatura+TSU).")
+        tabla, directorio, faltantes = calcular_tabla_dgesui(year)
+
+        print(f"Fuente: {directorio}/ (portal DGESUI, ver scripts/download_dgesui_montos.py)")
+        if faltantes:
+            print(f"[aviso] Sin archivo descargado para {year}, excluidas del cálculo: {faltantes}")
+        print("[aviso] ESTATAL aquí es el 'Monto Estatal' que reporta el propio DGESUI -- en la práctica suele ser solo la contraparte FORMULAICA del convenio de coparticipación, no el presupuesto estatal completo de la universidad (que sí mide --states vía APORTACION_ESTATAL_CONFIG; pueden diferir 2-3x en entidades con universidades grandes).")
+        print()
+
+        print(f"{'Entidad':<20} {'Insts':>6} {'Matrícula':>10} {'Federal':>15} {'Estatal':>15} {'Total':>15} {'Costo/al.Fed':>13} {'Costo/al.Total':>15}")
+        for r in tabla.iter_rows(named=True):
+            print(
+                f"{r['ENTIDAD']:<20} {r['N_INSTITUCIONES']:>6,} {r['MATRICULA']:>10,} "
+                f"{r['FEDERAL']:>15,.0f} {r['ESTATAL']:>15,.0f} {r['TOTAL']:>15,.0f} {r['COSTO_ALUMNO_FEDERAL']:>13,.0f} "
+                f"{r['COSTO_ALUMNO_TOTAL']:>15,.0f}"
+            )
+
+        if args.save:
+            OUT_DIR.mkdir(parents=True, exist_ok=True)
+            out_path = OUT_DIR / f"comparacion_universidades_dgesui_{year}.parquet"
+            tabla.write_parquet(out_path)
+            print(f"\nGuardado → {out_path}")
+        else:
+            print("\n(no guardado — pasa --save para escribir el parquet)")
+        return
 
     if args.states:
         tabla, pef_path, anuies_path, ciclo, año_esperado, no_verificadas = calcular_tabla_entidades(
